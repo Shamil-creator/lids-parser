@@ -2813,11 +2813,29 @@ async def edit_category_message_start(callback: CallbackQuery, state: FSMContext
         keyboard = [[InlineKeyboardButton(text="❌ Отмена", callback_data=f"category_menu_{category_id}")]]
         
         await _safe_callback_answer(callback)
+        
+        # Показываем полный текст без искусственной обрезки
+        # Telegram ограничение 4096 символов на сообщение, но мы показываем максимум что помещается
+        header = "✏️ <b>Редактирование текста сообщения</b>\n\n"
+        footer = "\n\nОтправьте новый текст сообщения (или отправьте 'удалить' чтобы использовать глобальный шаблон):"
+        
+        # Формируем полное сообщение
+        full_message = f"{header}Текущий текст:\n<i>{current_text}</i>{footer}"
+        
+        # Если сообщение слишком длинное для Telegram, показываем начало с предупреждением
+        if len(full_message) > 4096:
+            # Вычисляем сколько символов доступно для текста
+            header_footer_len = len(header) + len(footer) + 200  # +200 для HTML тегов и предупреждения
+            available_text_len = 4096 - header_footer_len
+            preview = current_text[:available_text_len] if len(current_text) > available_text_len else current_text
+            
+            full_message = f"{header}Текущий текст ({len(current_text)} символов):\n<i>{preview}</i>\n\n"
+            full_message += f"<i>⚠️ Текст обрезан для отображения (показано {len(preview)} из {len(current_text)} символов).\n"
+            full_message += f"Полный текст сохранен и будет отправлен пользователям полностью.</i>{footer}"
+        
         await _safe_edit_text(
             callback,
-            f"✏️ <b>Редактирование текста сообщения</b>\n\n"
-            f"Текущий текст:\n<i>{current_text[:500]}</i>\n\n"
-            f"Отправьте новый текст сообщения (или отправьте 'удалить' чтобы использовать глобальный шаблон):",
+            full_message,
             reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard),
             parse_mode="HTML"
         )

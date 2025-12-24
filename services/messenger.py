@@ -40,6 +40,35 @@ class Messenger:
         """Обновить шаблон из БД"""
         self.template = self._get_template()
 
+    async def _send_long_message(self, user_id: int, text: str, delay: float = 0.5):
+        """Отправить длинное сообщение, разбив его на части по 4096 символов"""
+        max_length = 4096
+        if len(text) <= max_length:
+            # Если текст короткий, отправляем как есть
+            await self.client.send_message(user_id, text)
+            return
+        
+        # Разбиваем текст на части
+        parts = []
+        for i in range(0, len(text), max_length):
+            parts.append(text[i:i + max_length])
+        
+        # Отправляем каждую часть с небольшой задержкой
+        sent_parts = 0
+        for i, part in enumerate(parts):
+            try:
+                await self.client.send_message(user_id, part)
+                sent_parts += 1
+                # Добавляем задержку между сообщениями (кроме последнего)
+                if i < len(parts) - 1:
+                    await asyncio.sleep(delay)
+            except Exception as e:
+                print(f"[{self.session_name}] ⚠️ Ошибка при отправке части {i+1}/{len(parts)} сообщения пользователю {user_id}: {e}")
+                # Продолжаем отправку остальных частей даже если одна не отправилась
+        
+        if sent_parts > 0:
+            print(f"[{self.session_name}] 📨 Отправлено длинное сообщение ({len(text)} символов) в {sent_parts}/{len(parts)} частях пользователю {user_id}")
+
     async def send_first_message(self, user_id: int, username: str = "", channel_source: str = "", original_post_text: str = "", force_repeat: bool = False) -> bool:
         """Отправить первое сообщение пользователю"""
         try:
@@ -52,8 +81,8 @@ class Messenger:
             if not force_repeat and db.is_user_processed(user_id):
                 return False
 
-            # Отправка сообщения
-            await self.client.send_message(user_id, self.template)
+            # Отправка сообщения (автоматически разбивается на части, если превышает 4096 символов)
+            await self._send_long_message(user_id, self.template)
 
             # НЕ помечаем пользователя как обработанного при отправке первого сообщения
             # Пользователь будет помечен как обработанный только при ответе
@@ -86,7 +115,8 @@ class Messenger:
             # Проверка ответа пользователя
             if not db.is_user_processed(user_id):
                 try:
-                    await self.client.send_message(user_id, config.FOLLOW_UP_MESSAGE)
+                    # Отправка повторного сообщения (автоматически разбивается на части, если превышает 4096 символов)
+                    await self._send_long_message(user_id, config.FOLLOW_UP_MESSAGE)
                 except Exception as e:
                     print(f"[{self.session_name}] Error sending follow-up to {user_id}: {e}")
 
