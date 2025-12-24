@@ -734,7 +734,7 @@ async def category_keywords_menu(callback: CallbackQuery):
     
     keyboard = []
     
-    # Кнопка для добавления нового ключевого слова
+    # Кнопка для добавления нового ключевого слова (всегда первой, чтобы была видна)
     keyboard.append([InlineKeyboardButton(text="➕ Добавить новое", callback_data=f"cat_keyword_add_new_{category_id}")])
     
     # Получаем ID ключевых слов категории
@@ -744,15 +744,15 @@ async def category_keywords_menu(callback: CallbackQuery):
     category_keyword_ids = {row[0] for row in cursor.fetchall()}
     conn.close()
     
-    # Кнопки для добавления существующих ключевых слов
-    for kw in all_keywords:
-        if kw['id'] not in category_keyword_ids:
-            keyboard.append([
-                InlineKeyboardButton(
-                    text=f"➕ {kw['word']}",
-                    callback_data=f"cat_keyword_add_{category_id}_{kw['id']}"
-                )
-            ])
+    # Кнопки для добавления существующих ключевых слов (ограничиваем до 20 для удобства)
+    available_keywords = [kw for kw in all_keywords if kw['id'] not in category_keyword_ids]
+    for kw in available_keywords[:20]:  # Показываем только первые 20
+        keyboard.append([
+            InlineKeyboardButton(
+                text=f"➕ {kw['word']}",
+                callback_data=f"cat_keyword_add_{category_id}_{kw['id']}"
+            )
+        ])
     
     if keywords:
         keyboard.append([InlineKeyboardButton(text="🗑 Удалить", callback_data=f"cat_keyword_remove_{category_id}")])
@@ -915,7 +915,7 @@ async def category_stopwords_menu(callback: CallbackQuery):
     
     keyboard = []
     
-    # Кнопка для добавления нового стоп-слова
+    # Кнопка для добавления нового стоп-слова (всегда первой, чтобы была видна)
     keyboard.append([InlineKeyboardButton(text="➕ Добавить новое", callback_data=f"cat_stopword_add_new_{category_id}")])
     
     # Получаем ID стоп-слов категории
@@ -925,15 +925,15 @@ async def category_stopwords_menu(callback: CallbackQuery):
     category_stopword_ids = {row[0] for row in cursor.fetchall()}
     conn.close()
     
-    # Кнопки для добавления существующих стоп-слов
-    for sw in all_stopwords:
-        if sw['id'] not in category_stopword_ids:
-            keyboard.append([
-                InlineKeyboardButton(
-                    text=f"➕ {sw['word']}",
-                    callback_data=f"cat_stopword_add_{category_id}_{sw['id']}"
-                )
-            ])
+    # Кнопки для добавления существующих стоп-слов (ограничиваем до 20 для удобства)
+    available_stopwords = [sw for sw in all_stopwords if sw['id'] not in category_stopword_ids]
+    for sw in available_stopwords[:20]:  # Показываем только первые 20
+        keyboard.append([
+            InlineKeyboardButton(
+                text=f"➕ {sw['word']}",
+                callback_data=f"cat_stopword_add_{category_id}_{sw['id']}"
+            )
+        ])
     
     if stopwords:
         keyboard.append([InlineKeyboardButton(text="🗑 Удалить", callback_data=f"cat_stopword_remove_{category_id}")])
