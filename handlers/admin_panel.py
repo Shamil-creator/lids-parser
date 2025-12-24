@@ -396,6 +396,7 @@ def get_category_menu(category_id: int, user_id: int = None) -> InlineKeyboardMa
         [InlineKeyboardButton(text=f"🔑 Ключевые слова ({len(keywords)})", callback_data=f"cat_keywords_{category_id}")],
         [InlineKeyboardButton(text=f"🛑 Стоп-слова ({len(stopwords)})", callback_data=f"cat_stopwords_{category_id}")],
         [InlineKeyboardButton(text="💬 Текст сообщения", callback_data=f"category_edit_message_{category_id}")],
+        [InlineKeyboardButton(text="🔄 Повторное сообщение", callback_data=f"category_edit_followup_{category_id}")],
         [InlineKeyboardButton(text="📊 Статистика", callback_data=f"category_stats_{category_id}")],
         [InlineKeyboardButton(text=f"{'✅' if has_userbot else '❌'} Userbot'ы ({len(userbots)})", callback_data=f"cat_userbot_{category_id}")],
         [InlineKeyboardButton(text=f"{'✅' if has_channel else '❌'} Канал менеджеров", callback_data=f"cat_managers_channel_{category_id}")],
@@ -2696,7 +2697,7 @@ async def add_category_channel(message: Message, state: FSMContext):
     )
 
 
-@router.callback_query(F.data.startswith("category_edit_") & ~F.data.startswith("category_edit_message_") & ~F.data.startswith("category_edit_name_") & ~F.data.startswith("category_edit_session_") & ~F.data.startswith("category_edit_channel_"))
+@router.callback_query(F.data.startswith("category_edit_") & ~F.data.startswith("category_edit_message_") & ~F.data.startswith("category_edit_followup_") & ~F.data.startswith("category_edit_name_") & ~F.data.startswith("category_edit_session_") & ~F.data.startswith("category_edit_channel_"))
 async def edit_category(callback: CallbackQuery, state: FSMContext):
     """Начать редактирование категории"""
     try:
@@ -2733,6 +2734,7 @@ async def edit_category(callback: CallbackQuery, state: FSMContext):
 class EditCategoryStates(StatesGroup):
     waiting_for_name = State()
     waiting_for_message_text = State()
+    waiting_for_followup_message = State()
     waiting_for_session_name = State()
     waiting_for_channel_id = State()
 
@@ -2881,6 +2883,102 @@ async def edit_category_message_process(message: Message, state: FSMContext):
     if category:
         text = f"📁 <b>{category['name']}</b>\n\n"
         text += "Текст сообщения успешно обновлен!"
+        await message.answer(text, reply_markup=get_category_menu(category_id, message.from_user.id), parse_mode="HTML")
+    else:
+        await message.answer("Выберите раздел:", reply_markup=get_main_menu(message.from_user.id))
+
+
+@router.callback_query(F.data.startswith("category_edit_followup_") & ~F.data.startswith("category_edit_followup_exec_"))
+async def edit_category_followup_start(callback: CallbackQuery, state: FSMContext):
+    """Начать редактирование повторного сообщения категории"""
+    try:
+        category_id = int(callback.data.split("_")[-1])
+    except Exception as e:
+        await _safe_callback_answer(callback, "Некорректный ID", show_alert=True)
+        print(f"Error parsing category_id: {e}")
+        return
+    
+    category = db.get_category(category_id)
+    if not category:
+        await _safe_callback_answer(callback, "Категория не найдена", show_alert=True)
+        return
+    
+    try:
+        await state.set_state(EditCategoryStates.waiting_for_followup_message)
+        await state.update_data(category_id=category_id)
+        
+        current_text = category.get('follow_up_message') or config.FOLLOW_UP_MESSAGE
+        
+        keyboard = [[InlineKeyboardButton(text="❌ Отмена", callback_data=f"category_menu_{category_id}")]]
+        
+        await _safe_callback_answer(callback)
+        
+        # Показываем полный текст без искусственной обрезки
+        header = "🔄 <b>Редактирование повторного сообщения</b>\n\n"
+        footer = "\n\nОтправьте новый текст повторного сообщения (или отправьте 'удалить' чтобы использовать глобальный шаблон):"
+        
+        # Формируем полное сообщение
+        full_message = f"{header}Текущий текст:\n<i>{current_text}</i>{footer}"
+        
+        # Если сообщение слишком длинное для Telegram, показываем начало с предупреждением
+        if len(full_message) > 4096:
+            # Вычисляем сколько символов доступно для текста
+            header_footer_len = len(header) + len(footer) + 200  # +200 для HTML тегов и предупреждения
+            available_text_len = 4096 - header_footer_len
+            preview = current_text[:available_text_len] if len(current_text) > available_text_len else current_text
+            
+            full_message = f"{header}Текущий текст ({len(current_text)} символов):\n<i>{preview}</i>\n\n"
+            full_message += f"<i>⚠️ Текст обрезан для отображения (показано {len(preview)} из {len(current_text)} символов).\n"
+            full_message += f"Полный текст сохранен и будет отправлен пользователям полностью.</i>{footer}"
+        
+        await _safe_edit_text(
+            callback,
+            full_message,
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard),
+            parse_mode="HTML"
+        )
+    except Exception as e:
+        print(f"Error in edit_category_followup_start: {e}")
+        await _safe_callback_answer(callback, f"Ошибка: {str(e)}", show_alert=True)
+
+
+@router.message(EditCategoryStates.waiting_for_followup_message)
+async def edit_category_followup_process(message: Message, state: FSMContext):
+    """Обработать новый текст повторного сообщения категории"""
+    text = message.text.strip()
+    data = await state.get_data()
+    category_id = data.get('category_id')
+    
+    if not category_id:
+        await message.answer("❌ Ошибка: категория не найдена.")
+        await state.clear()
+        return
+    
+    # Если пользователь отправил "удалить", очищаем follow_up_message
+    if text.lower() in ['удалить', 'delete', 'очистить', 'clear']:
+        success = db.update_category(category_id, {'follow_up_message': None})
+        if success:
+            await message.answer("✅ Повторное сообщение удалено. Будет использоваться глобальный шаблон.")
+        else:
+            await message.answer("❌ Ошибка при удалении повторного сообщения.")
+    else:
+        if not text:
+            await message.answer("❌ Текст повторного сообщения не может быть пустым. Попробуйте снова:")
+            return
+        
+        success = db.update_category(category_id, {'follow_up_message': text})
+        if success:
+            await message.answer("✅ Повторное сообщение обновлено!")
+        else:
+            await message.answer("❌ Ошибка при обновлении повторного сообщения.")
+    
+    await state.clear()
+    
+    # Возвращаемся в меню категории
+    category = db.get_category(category_id)
+    if category:
+        text = f"📁 <b>{category['name']}</b>\n\n"
+        text += "Повторное сообщение успешно обновлено!"
         await message.answer(text, reply_markup=get_category_menu(category_id, message.from_user.id), parse_mode="HTML")
     else:
         await message.answer("Выберите раздел:", reply_markup=get_main_menu(message.from_user.id))

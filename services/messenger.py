@@ -127,8 +127,14 @@ class Messenger:
             if not is_processed:
                 try:
                     print(f"[{self.session_name}] 📤 Отправляем повторное сообщение пользователю {user_id}...")
+                    # Получаем повторное сообщение категории (если есть) или используем глобальное
+                    follow_up_text = None
+                    if self.category_id:
+                        follow_up_text = db.get_category_follow_up_message(self.category_id)
+                    if not follow_up_text:
+                        follow_up_text = getattr(config, 'FOLLOW_UP_MESSAGE', 'Привет! Ты еще не ответил на мое сообщение. Готов обсудить детали?')
                     # Отправка повторного сообщения (автоматически разбивается на части, если превышает 4096 символов)
-                    await self._send_long_message(user_id, config.FOLLOW_UP_MESSAGE)
+                    await self._send_long_message(user_id, follow_up_text)
                     print(f"[{self.session_name}] ✅ Повторное сообщение отправлено пользователю {user_id}")
                 except Exception as e:
                     print(f"[{self.session_name}] ❌ Error sending follow-up to {user_id}: {e}")

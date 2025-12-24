@@ -190,6 +190,13 @@ class Database:
             # Колонка уже существует
             pass
         
+        # Миграция: добавляем follow_up_message если его нет
+        try:
+            cursor.execute("ALTER TABLE categories ADD COLUMN follow_up_message TEXT")
+        except sqlite3.OperationalError:
+            # Колонка уже существует
+            pass
+        
         # Миграция: удаляем assigned_session_name если он есть (старая структура)
         try:
             cursor.execute("ALTER TABLE categories DROP COLUMN assigned_session_name")
@@ -1092,6 +1099,13 @@ class Database:
         category = self.get_category(category_id)
         if category and category.get('message_text'):
             return category['message_text']
+        return None
+
+    def get_category_follow_up_message(self, category_id: int) -> Optional[str]:
+        """Получить текст повторного сообщения категории (или None если используется глобальный шаблон)"""
+        category = self.get_category(category_id)
+        if category and category.get('follow_up_message'):
+            return category['follow_up_message']
         return None
 
     def get_all_categories(self) -> List[dict]:
