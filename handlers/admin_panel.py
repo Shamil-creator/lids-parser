@@ -395,10 +395,10 @@ def get_category_menu(category_id: int, user_id: int = None) -> InlineKeyboardMa
         [InlineKeyboardButton(text="🌐 Публичные группы", callback_data=f"cat_public_groups_{category_id}")],
         [InlineKeyboardButton(text=f"🔑 Ключевые слова ({len(keywords)})", callback_data=f"cat_keywords_{category_id}")],
         [InlineKeyboardButton(text=f"🛑 Стоп-слова ({len(stopwords)})", callback_data=f"cat_stopwords_{category_id}")],
-        [InlineKeyboardButton(text=f"{'✅' if has_userbot else '❌'} Userbot'ы ({len(userbots)})", callback_data=f"cat_userbot_{category_id}")],
-        [InlineKeyboardButton(text=f"{'✅' if has_channel else '❌'} Канал менеджеров", callback_data=f"cat_managers_channel_{category_id}")],
         [InlineKeyboardButton(text="💬 Текст сообщения", callback_data=f"category_edit_message_{category_id}")],
         [InlineKeyboardButton(text="📊 Статистика", callback_data=f"category_stats_{category_id}")],
+        [InlineKeyboardButton(text=f"{'✅' if has_userbot else '❌'} Userbot'ы ({len(userbots)})", callback_data=f"cat_userbot_{category_id}")],
+        [InlineKeyboardButton(text=f"{'✅' if has_channel else '❌'} Канал менеджеров", callback_data=f"cat_managers_channel_{category_id}")],
     ]
     
     # Кнопки редактирования/удаления только для админа

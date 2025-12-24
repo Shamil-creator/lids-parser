@@ -83,6 +83,7 @@ class Messenger:
 
             # Отправка сообщения (автоматически разбивается на части, если превышает 4096 символов)
             await self._send_long_message(user_id, self.template)
+            print(f"[{self.session_name}] ✅ Первое сообщение отправлено пользователю {user_id}")
 
             # НЕ помечаем пользователя как обработанного при отправке первого сообщения
             # Пользователь будет помечен как обработанный только при ответе
@@ -109,16 +110,33 @@ class Messenger:
 
     async def schedule_follow_up(self, user_id: int):
         """Запланировать дожимающее сообщение"""
+        delay_minutes = config.FOLLOW_UP_DELAY_MINUTES
+        delay_seconds = delay_minutes * 60
+        print(f"[{self.session_name}] ⏰ Запущен таймер повторной отправки для пользователя {user_id}: через {delay_minutes} минут ({delay_seconds} секунд)")
+        
         async def follow_up_task():
             # Используем задержку в минутах из конфига
-            await asyncio.sleep(config.FOLLOW_UP_DELAY_MINUTES * 60)
+            print(f"[{self.session_name}] ⏳ Ожидание {delay_minutes} минут перед повторной отправкой пользователю {user_id}...")
+            await asyncio.sleep(delay_seconds)
+            
             # Проверка ответа пользователя
-            if not db.is_user_processed(user_id):
+            is_processed = db.is_user_processed(user_id)
+            print(f"[{self.session_name}] 🔍 Проверка пользователя {user_id} после задержки: обработан={is_processed}")
+            
+            if not is_processed:
                 try:
+                    print(f"[{self.session_name}] 📤 Отправляем повторное сообщение пользователю {user_id}...")
                     # Отправка повторного сообщения (автоматически разбивается на части, если превышает 4096 символов)
                     await self._send_long_message(user_id, config.FOLLOW_UP_MESSAGE)
+                    print(f"[{self.session_name}] ✅ Повторное сообщение отправлено пользователю {user_id}")
                 except Exception as e:
-                    print(f"[{self.session_name}] Error sending follow-up to {user_id}: {e}")
+                    print(f"[{self.session_name}] ❌ Error sending follow-up to {user_id}: {e}")
+            else:
+                print(f"[{self.session_name}] ⏭️ Пользователь {user_id} уже ответил, повторное сообщение не отправляется")
+            
+            # Удаляем таймер из словаря после выполнения
+            if user_id in self.follow_up_timers:
+                del self.follow_up_timers[user_id]
 
         task = asyncio.create_task(follow_up_task())
         self.follow_up_timers[user_id] = task
