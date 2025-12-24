@@ -1028,7 +1028,11 @@ async def show_keywords(callback: CallbackQuery):
 async def add_keywords_start(callback: CallbackQuery, state: FSMContext):
     """Начать добавление ключевых слов"""
     await state.set_state(AddKeywordsStates.waiting_for_keywords)
-    await callback.message.edit_text("Отправьте ключевые слова через запятую или каждое с новой строки:")
+    keyboard = [[InlineKeyboardButton(text="❌ Отмена", callback_data="admin_keywords")]]
+    await callback.message.edit_text(
+        "Отправьте ключевые слова через запятую или каждое с новой строки:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
+    )
     await callback.answer()
 
 
@@ -1099,7 +1103,11 @@ async def show_stopwords(callback: CallbackQuery):
 async def add_stopwords_start(callback: CallbackQuery, state: FSMContext):
     """Начать добавление стоп-слов"""
     await state.set_state(AddStopwordsStates.waiting_for_stopwords)
-    await callback.message.edit_text("Отправьте стоп-слова через запятую или каждое с новой строки:")
+    keyboard = [[InlineKeyboardButton(text="❌ Отмена", callback_data="admin_stopwords")]]
+    await callback.message.edit_text(
+        "Отправьте стоп-слова через запятую или каждое с новой строки:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
+    )
     await callback.answer()
 
 
@@ -1169,7 +1177,11 @@ async def show_templates(callback: CallbackQuery):
 async def edit_template_start(callback: CallbackQuery, state: FSMContext):
     """Начать редактирование шаблона"""
     await state.set_state(UpdateTemplateStates.waiting_for_template)
-    await callback.message.edit_text("Отправьте новый текст шаблона:")
+    keyboard = [[InlineKeyboardButton(text="❌ Отмена", callback_data="admin_templates")]]
+    await callback.message.edit_text(
+        "Отправьте новый текст шаблона:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
+    )
     await callback.answer()
 
 
@@ -1185,8 +1197,11 @@ async def edit_template_process(message: Message, state: FSMContext):
 
 # ========== АККАУНТЫ ==========
 @router.callback_query(F.data == "admin_accounts")
-async def show_accounts(callback: CallbackQuery):
+async def show_accounts(callback: CallbackQuery, state: FSMContext):
     """Показать меню аккаунтов"""
+    # Очищаем state при возврате в меню
+    await state.clear()
+    
     accounts = db.get_all_accounts()
     text = f"👥 Аккаунты ({len(accounts)}):\n\n"
     for acc in accounts:
@@ -1223,10 +1238,12 @@ async def add_account_simple_start(callback: CallbackQuery, state: FSMContext):
         return
     
     await state.set_state(AddAccountStates.waiting_for_phone_simple)
+    keyboard = [[InlineKeyboardButton(text="❌ Отмена", callback_data="admin_accounts")]]
     await callback.message.edit_text(
         "📱 <b>Упрощенное добавление аккаунта</b>\n\n"
         "Используются глобальные настройки API.\n\n"
         "Отправьте номер телефона (с кодом страны, например: +79991234567):",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard),
         parse_mode="HTML"
     )
     await callback.answer()
@@ -1267,7 +1284,8 @@ async def add_account_simple_phone(message: Message, state: FSMContext):
             phone_code_hash=sent_code.phone_code_hash
         )
         await state.set_state(AddAccountStates.waiting_for_code)
-        await message.answer("✅ Код отправлен!\n\nОтправьте код подтверждения из Telegram:")
+        keyboard = [[InlineKeyboardButton(text="❌ Отмена", callback_data="admin_accounts")]]
+        await message.answer("✅ Код отправлен!\n\nОтправьте код подтверждения из Telegram:", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
         await client.disconnect()
         
     except Exception as e:
@@ -1297,10 +1315,12 @@ async def add_account_start(callback: CallbackQuery, state: FSMContext):
         await callback.answer()
     else:
         await state.set_state(AddAccountStates.waiting_for_api_id)
+        keyboard = [[InlineKeyboardButton(text="❌ Отмена", callback_data="admin_accounts")]]
         await callback.message.edit_text(
             "Отправьте API_ID:\n\n"
             "💡 <b>Совет:</b> Настройте глобальные API credentials в '⚙️ Настройки API', "
             "чтобы потом добавлять аккаунты только по номеру телефона!",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard),
             parse_mode="HTML"
         )
         await callback.answer()
@@ -1310,13 +1330,20 @@ async def add_account_start(callback: CallbackQuery, state: FSMContext):
 async def add_account_full_start(callback: CallbackQuery, state: FSMContext):
     """Начать полное добавление аккаунта (с API_ID/API_HASH)"""
     await state.set_state(AddAccountStates.waiting_for_api_id)
-    await callback.message.edit_text("Отправьте API_ID:")
+    keyboard = [[InlineKeyboardButton(text="❌ Отмена", callback_data="admin_accounts")]]
+    await callback.message.edit_text(
+        "Отправьте API_ID:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
+    )
     await callback.answer()
 
 
 @router.callback_query(F.data == "account_api_settings")
-async def show_api_settings(callback: CallbackQuery):
+async def show_api_settings(callback: CallbackQuery, state: FSMContext):
     """Показать настройки глобальных API credentials"""
+    # Очищаем state при возврате в меню
+    await state.clear()
+    
     global_api = db.get_global_api_settings()
     
     if global_api and global_api.get('api_id') and global_api.get('api_hash'):
@@ -1352,10 +1379,12 @@ async def show_api_settings(callback: CallbackQuery):
 async def api_settings_set_start(callback: CallbackQuery, state: FSMContext):
     """Начать настройку глобальных API credentials"""
     await state.set_state(GlobalAPISettingsStates.waiting_for_api_id)
+    keyboard = [[InlineKeyboardButton(text="❌ Отмена", callback_data="account_api_settings")]]
     await callback.message.edit_text(
         "⚙️ <b>Настройка глобальных API credentials</b>\n\n"
         "Эти настройки будут использоваться для всех новых аккаунтов.\n\n"
         "Отправьте API_ID:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard),
         parse_mode="HTML"
     )
     await callback.answer()
@@ -1368,9 +1397,11 @@ async def api_settings_api_id(message: Message, state: FSMContext):
         api_id = int(message.text.strip())
         await state.update_data(api_id=api_id)
         await state.set_state(GlobalAPISettingsStates.waiting_for_api_hash)
-        await message.answer("Отправьте API_HASH:")
+        keyboard = [[InlineKeyboardButton(text="❌ Отмена", callback_data="account_api_settings")]]
+        await message.answer("Отправьте API_HASH:", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
     except ValueError:
-        await message.answer("❌ API_ID должен быть числом. Попробуйте снова:")
+        keyboard = [[InlineKeyboardButton(text="❌ Отмена", callback_data="account_api_settings")]]
+        await message.answer("❌ API_ID должен быть числом. Попробуйте снова:", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
 
 
 @router.message(GlobalAPISettingsStates.waiting_for_api_hash)
@@ -1395,7 +1426,11 @@ async def api_settings_api_hash(message: Message, state: FSMContext):
 async def api_settings_edit_start(callback: CallbackQuery, state: FSMContext):
     """Начать редактирование глобальных API credentials"""
     await state.set_state(GlobalAPISettingsStates.waiting_for_api_id)
-    await callback.message.edit_text("Отправьте новый API_ID:")
+    keyboard = [[InlineKeyboardButton(text="❌ Отмена", callback_data="account_api_settings")]]
+    await callback.message.edit_text(
+        "Отправьте новый API_ID:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
+    )
     await callback.answer()
 
 
@@ -1411,6 +1446,7 @@ async def api_settings_clear(callback: CallbackQuery):
 async def add_account_session_start(callback: CallbackQuery, state: FSMContext):
     """Начать добавление аккаунта через готовый .session файл"""
     await state.set_state(AddAccountStates.waiting_for_session_name)
+    keyboard = [[InlineKeyboardButton(text="❌ Отмена", callback_data="admin_accounts")]]
     await callback.message.edit_text(
         "📁 <b>Загрузка готовой сессии</b>\n\n"
         "Этот способ позволяет добавить аккаунт БЕЗ API_ID и API_HASH!\n\n"
@@ -1421,6 +1457,7 @@ async def add_account_session_start(callback: CallbackQuery, state: FSMContext):
         "- Из папки sessions/ (если уже есть)\n"
         "- Экспортировать из Telegram Desktop\n\n"
         "Отправьте имя сессии:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard),
         parse_mode="HTML"
     )
     await callback.answer()
@@ -1437,6 +1474,7 @@ async def add_account_session_name(message: Message, state: FSMContext):
     
     await state.update_data(session_name=session_name)
     await state.set_state(AddAccountStates.waiting_for_session_file)
+    keyboard = [[InlineKeyboardButton(text="❌ Отмена", callback_data="admin_accounts")]]
     await message.answer(
         f"Имя сессии: <b>{session_name}</b>\n\n"
         "Теперь отправьте .session файл.\n\n"
@@ -1445,6 +1483,7 @@ async def add_account_session_name(message: Message, state: FSMContext):
         "2. Выберите 'Файл' или 'Документ'\n"
         "3. Выберите ваш .session файл\n"
         "4. Отправьте",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard),
         parse_mode="HTML"
     )
 
@@ -1453,16 +1492,29 @@ async def add_account_session_name(message: Message, state: FSMContext):
 async def add_account_session_file(message: Message, state: FSMContext):
     """Обработать загрузку .session файла"""
     if not message.document:
-        await message.answer("❌ Пожалуйста, отправьте файл (не фото). Попробуйте снова:")
+        data = await state.get_data()
+        category_id = data.get('category_id')
+        if category_id:
+            keyboard = [[InlineKeyboardButton(text="❌ Отмена", callback_data=f"cat_userbot_{category_id}")]]
+        else:
+            keyboard = [[InlineKeyboardButton(text="❌ Отмена", callback_data="admin_accounts")]]
+        await message.answer("❌ Пожалуйста, отправьте файл (не фото). Попробуйте снова:", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
         return
     
     file_name = message.document.file_name or ""
     
     # Проверяем что это .session файл
     if not file_name.endswith('.session'):
+        data = await state.get_data()
+        category_id = data.get('category_id')
+        if category_id:
+            keyboard = [[InlineKeyboardButton(text="❌ Отмена", callback_data=f"cat_userbot_{category_id}")]]
+        else:
+            keyboard = [[InlineKeyboardButton(text="❌ Отмена", callback_data="admin_accounts")]]
         await message.answer(
             "❌ Файл должен иметь расширение .session\n\n"
-            "Пожалуйста, отправьте правильный файл:"
+            "Пожалуйста, отправьте правильный файл:",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
         )
         return
     
@@ -1571,9 +1623,11 @@ async def add_account_api_id(message: Message, state: FSMContext):
         api_id = int(message.text.strip())
         await state.update_data(api_id=api_id)
         await state.set_state(AddAccountStates.waiting_for_api_hash)
-        await message.answer("Отправьте API_HASH:")
+        keyboard = [[InlineKeyboardButton(text="❌ Отмена", callback_data="admin_accounts")]]
+        await message.answer("Отправьте API_HASH:", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
     except ValueError:
-        await message.answer("❌ API_ID должен быть числом. Попробуйте снова:")
+        keyboard = [[InlineKeyboardButton(text="❌ Отмена", callback_data="admin_accounts")]]
+        await message.answer("❌ API_ID должен быть числом. Попробуйте снова:", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
 
 
 @router.message(AddAccountStates.waiting_for_api_hash)
@@ -1582,7 +1636,8 @@ async def add_account_api_hash(message: Message, state: FSMContext):
     api_hash = message.text.strip()
     await state.update_data(api_hash=api_hash)
     await state.set_state(AddAccountStates.waiting_for_phone)
-    await message.answer("Отправьте номер телефона (с кодом страны, например: +79991234567):")
+    keyboard = [[InlineKeyboardButton(text="❌ Отмена", callback_data="admin_accounts")]]
+    await message.answer("Отправьте номер телефона (с кодом страны, например: +79991234567):", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
 
 
 @router.message(AddAccountStates.waiting_for_phone)
@@ -1615,7 +1670,8 @@ async def add_account_phone(message: Message, state: FSMContext):
             phone_code_hash=sent_code.phone_code_hash
         )
         await state.set_state(AddAccountStates.waiting_for_code)
-        await message.answer("Отправьте код подтверждения из Telegram:")
+        keyboard = [[InlineKeyboardButton(text="❌ Отмена", callback_data="admin_accounts")]]
+        await message.answer("Отправьте код подтверждения из Telegram:", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
         await client.disconnect()
 
     except Exception as e:
@@ -1696,13 +1752,26 @@ async def add_account_code(message: Message, state: FSMContext):
 
         except SessionPasswordNeeded:
             await state.set_state(AddAccountStates.waiting_for_password)
-            await message.answer("Аккаунт защищен 2FA. Отправьте пароль:")
+            keyboard = [[InlineKeyboardButton(text="❌ Отмена", callback_data="admin_accounts")]]
+            await message.answer("Аккаунт защищен 2FA. Отправьте пароль:", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
             await client.disconnect()
 
     except (PhoneCodeInvalid, PhoneCodeExpired) as e:
-        await message.answer(f"❌ Неверный или истекший код. Попробуйте снова: {e}")
+        data = await state.get_data()
+        category_id = data.get('category_id')
+        if category_id:
+            keyboard = [[InlineKeyboardButton(text="❌ Отмена", callback_data=f"cat_userbot_{category_id}")]]
+        else:
+            keyboard = [[InlineKeyboardButton(text="❌ Отмена", callback_data="admin_accounts")]]
+        await message.answer(f"❌ Неверный или истекший код. Попробуйте снова: {e}", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
     except Exception as e:
-        await message.answer(f"❌ Ошибка: {e}")
+        data = await state.get_data()
+        category_id = data.get('category_id')
+        if category_id:
+            keyboard = [[InlineKeyboardButton(text="❌ Отмена", callback_data=f"cat_userbot_{category_id}")]]
+        else:
+            keyboard = [[InlineKeyboardButton(text="❌ Отмена", callback_data="admin_accounts")]]
+        await message.answer(f"❌ Ошибка: {e}", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
 
 
 @router.message(AddAccountStates.waiting_for_password)

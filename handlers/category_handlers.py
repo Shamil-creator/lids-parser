@@ -289,8 +289,11 @@ async def cat_add_public_group_process(message: Message, state: FSMContext):
 
 # Userbot категории
 @router.callback_query(F.data.startswith("cat_userbot_"))
-async def category_userbot(callback: CallbackQuery):
+async def category_userbot(callback: CallbackQuery, state: FSMContext):
     """Настройка userbot'а категории"""
+    # Очищаем state при возврате в меню
+    await state.clear()
+    
     try:
         category_id = int(callback.data.split("_")[-1])
     except Exception:
@@ -554,12 +557,14 @@ async def cat_account_add_simple_start(callback: CallbackQuery, state: FSMContex
     await state.set_state(AddAccountStates.waiting_for_phone_simple)
     await state.update_data(category_id=category_id)
     
+    keyboard = [[InlineKeyboardButton(text="❌ Отмена", callback_data=f"cat_userbot_{category_id}")]]
     await _safe_callback_answer(callback)
     await _safe_edit_text(
         callback,
         "📱 <b>Упрощенное добавление userbot'а</b>\n\n"
         "Используются глобальные настройки API.\n\n"
         "Отправьте номер телефона (с кодом страны, например: +79991234567):",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard),
         parse_mode="HTML"
     )
 
@@ -576,11 +581,13 @@ async def cat_account_add_full_start(callback: CallbackQuery, state: FSMContext)
     await state.set_state(AddAccountStates.waiting_for_api_id)
     await state.update_data(category_id=category_id)
     
+    keyboard = [[InlineKeyboardButton(text="❌ Отмена", callback_data=f"cat_userbot_{category_id}")]]
     await _safe_callback_answer(callback)
     await _safe_edit_text(
         callback,
         "📝 <b>Полное добавление userbot'а</b>\n\n"
         "Отправьте API_ID:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard),
         parse_mode="HTML"
     )
 
@@ -597,6 +604,7 @@ async def cat_account_add_session_start(callback: CallbackQuery, state: FSMConte
     await state.set_state(AddAccountStates.waiting_for_session_name)
     await state.update_data(category_id=category_id)
     
+    keyboard = [[InlineKeyboardButton(text="❌ Отмена", callback_data=f"cat_userbot_{category_id}")]]
     await _safe_callback_answer(callback)
     await _safe_edit_text(
         callback,
@@ -605,6 +613,7 @@ async def cat_account_add_session_start(callback: CallbackQuery, state: FSMConte
         "1. Отправьте имя для сессии (например: account_123456789)\n"
         "2. Затем отправьте .session файл\n\n"
         "Отправьте имя сессии:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard),
         parse_mode="HTML"
     )
 
