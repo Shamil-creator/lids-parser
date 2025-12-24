@@ -35,3 +35,9 @@ sessions/
 # OS
 .DS_Store
 Thumbs.db
+
+# Cursor IDE
+.cursor/
+
+# Changelog files
+CHANGELOG_PRIVATE_GROUPS.md
