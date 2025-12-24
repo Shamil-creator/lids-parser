@@ -1570,3 +1570,48 @@ class Database:
             'month_leads': month_leads,
             'categories': categories_stats,
         }
+
+    def get_category_full_info(self, category_id: int) -> Optional[dict]:
+        """Получить полную информацию о категории одним запросом (оптимизация)"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        
+        # Получаем категорию
+        cursor.execute("SELECT * FROM categories WHERE id = ?", (category_id,))
+        category_row = cursor.fetchone()
+        if not category_row:
+            conn.close()
+            return None
+        
+        category = dict(category_row)
+        
+        # Получаем userbot'ы
+        cursor.execute("""
+            SELECT session_name FROM category_userbots
+            WHERE category_id = ?
+        """, (category_id,))
+        category['userbots'] = [row[0] for row in cursor.fetchall()]
+        
+        # Получаем количество групп
+        cursor.execute("""
+            SELECT COUNT(*) FROM private_groups
+            WHERE category_id = ?
+        """, (category_id,))
+        category['groups_count'] = cursor.fetchone()[0]
+        
+        # Получаем количество ключевых слов
+        cursor.execute("""
+            SELECT COUNT(*) FROM category_keywords
+            WHERE category_id = ?
+        """, (category_id,))
+        category['keywords_count'] = cursor.fetchone()[0]
+        
+        # Получаем количество стоп-слов
+        cursor.execute("""
+            SELECT COUNT(*) FROM category_stopwords
+            WHERE category_id = ?
+        """, (category_id,))
+        category['stopwords_count'] = cursor.fetchone()[0]
+        
+        conn.close()
+        return category

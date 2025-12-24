@@ -41,3 +41,6 @@ Thumbs.db
 
 # Changelog files
 CHANGELOG_PRIVATE_GROUPS.md
+
+# Tests
+tests/

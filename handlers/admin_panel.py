@@ -430,31 +430,40 @@ async def handle_category_command(message: Message):
     
     category_id = category['id']
     
-    # Если пользователь не админ и не менеджер этой категории, добавляем его как менеджера
-    if not db.is_admin(user_id):
+    # Оптимизация: проверяем админа один раз
+    is_admin_user = db.is_admin(user_id)
+    
+    # Если пользователь не админ, проверяем и добавляем как менеджера если нужно
+    if not is_admin_user:
         manager_categories = db.get_manager_categories(user_id)
         if category_id not in manager_categories:
             db.add_manager(user_id, category_id)
+            # Обновляем список после добавления
+            manager_categories = db.get_manager_categories(user_id)
+        
+        # Проверяем права доступа
+        if category_id not in manager_categories:
+            await message.answer("❌ У вас нет доступа к этой категории.")
+            return
     
-    # Проверяем права доступа
-    if not db.can_access_category(user_id, category_id):
-        await message.answer("❌ У вас нет доступа к этой категории.")
+    # Показываем меню категории (оптимизированный запрос - вся информация одним запросом)
+    category_info = db.get_category_full_info(category_id)
+    if not category_info:
+        await message.answer("❌ Категория не найдена.")
         return
     
-    # Показываем меню категории
-    category = db.get_category(category_id)
-    userbots = db.get_category_userbots(category_id)
-    groups = db.get_private_groups_by_category(category_id)
-    keywords = db.get_category_keywords(category_id)
-    stopwords = db.get_category_stopwords(category_id)
+    userbots = category_info.get('userbots', [])
+    groups_count = category_info.get('groups_count', 0)
+    keywords_count = category_info.get('keywords_count', 0)
+    stopwords_count = category_info.get('stopwords_count', 0)
     
-    text = f"📁 <b>{category['name']}</b>\n\n"
+    text = f"📁 <b>{category_info['name']}</b>\n\n"
     text += f"Userbot'ы: {', '.join(userbots) if userbots else 'Не назначены'}\n"
-    text += f"Канал менеджеров: <code>{category.get('managers_channel_id') or 'Не настроен'}</code>\n\n"
+    text += f"Канал менеджеров: <code>{category_info.get('managers_channel_id') or 'Не настроен'}</code>\n\n"
     text += f"📊 Статистика:\n"
-    text += f"• Групп: {len(groups)}\n"
-    text += f"• Ключевых слов: {len(keywords)}\n"
-    text += f"• Стоп-слов: {len(stopwords)}\n"
+    text += f"• Групп: {groups_count}\n"
+    text += f"• Ключевых слов: {keywords_count}\n"
+    text += f"• Стоп-слов: {stopwords_count}\n"
     
     await message.answer(text, reply_markup=get_category_menu(category_id, user_id), parse_mode="HTML")
 
@@ -2015,6 +2024,38 @@ async def show_categories(callback: CallbackQuery):
     await _safe_edit_text(callback, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard), parse_mode="HTML")
 
 
+@router.callback_query(F.data == "category_add_cancel")
+async def add_category_cancel(callback: CallbackQuery, state: FSMContext):
+    """Отмена создания категории"""
+    data = await state.get_data()
+    category_id = data.get('category_id')
+    
+    # Если категория уже была создана, удаляем её
+    if category_id:
+        db.delete_category(category_id)
+    
+    await state.clear()
+    user_id = callback.from_user.id
+    
+    await _safe_callback_answer(callback, "❌ Создание категории отменено", show_alert=True)
+    
+    categories = db.get_all_categories()
+    if not categories:
+        await _safe_edit_text(
+            callback,
+            "📁 <b>Категории</b>\n\n"
+            "У вас пока нет категорий. Создайте первую категорию для начала работы!",
+            reply_markup=get_main_menu(user_id),
+            parse_mode="HTML"
+        )
+    else:
+        await _safe_edit_text(
+            callback,
+            "Выберите категорию для настройки:",
+            reply_markup=get_main_menu(user_id)
+        )
+
+
 @router.callback_query(F.data == "category_add")
 async def add_category_start(callback: CallbackQuery, state: FSMContext):
     """Начать создание категории"""
@@ -2027,10 +2068,14 @@ async def add_category_start(callback: CallbackQuery, state: FSMContext):
     
     await state.set_state(CategoryStates.waiting_for_name)
     await _safe_callback_answer(callback)
+    
+    keyboard = [[InlineKeyboardButton(text="❌ Отмена", callback_data="category_add_cancel")]]
+    
     await _safe_edit_text(
         callback,
         "📁 <b>Создание категории</b>\n\nОтправьте название категории:\n\n"
         "💡 <b>Важно:</b> Команда для категории будет создана автоматически на основе названия (например, 'Машины → /машины)",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard),
         parse_mode="HTML"
     )
 
@@ -2040,24 +2085,28 @@ async def add_category_name(message: Message, state: FSMContext):
     """Получить название категории"""
     name = message.text.strip()
     if not name:
-        await message.answer("❌ Название не может быть пустым. Попробуйте снова:")
+        keyboard = [[InlineKeyboardButton(text="❌ Отмена", callback_data="category_add_cancel")]]
+        await message.answer("❌ Название не может быть пустым. Попробуйте снова:", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
         return
     
     # Проверяем уникальность
     categories = db.get_all_categories()
     if any(cat['name'].lower() == name.lower() for cat in categories):
-        await message.answer("❌ Категория с таким названием уже существует. Попробуйте другое название:")
+        keyboard = [[InlineKeyboardButton(text="❌ Отмена", callback_data="category_add_cancel")]]
+        await message.answer("❌ Категория с таким названием уже существует. Попробуйте другое название:", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
         return
     
     category_id = db.add_category(name)
     if not category_id:
         await message.answer("❌ Ошибка при создании категории.")
         await state.clear()
-        await message.answer("Выберите раздел:", reply_markup=get_main_menu())
+        await message.answer("Выберите раздел:", reply_markup=get_main_menu(message.from_user.id))
         return
     
     await state.update_data(category_id=category_id)
     await state.set_state(CategoryStates.waiting_for_session_name)
+    
+    keyboard = [[InlineKeyboardButton(text="❌ Отмена", callback_data="category_add_cancel")]]
     
     # Показываем список аккаунтов
     accounts = db.get_all_accounts()
@@ -2065,14 +2114,15 @@ async def add_category_name(message: Message, state: FSMContext):
         await message.answer(
             "✅ Категория создана!\n\n"
             "⚠️ Нет доступных аккаунтов. Добавьте аккаунты в разделе '👥 Аккаунты'.\n\n"
-            "Отправьте имя сессии (session_name) для этой категории или отправьте 'пропустить' для пропуска:"
+            "Отправьте имя сессии (session_name) для этой категории или отправьте 'пропустить' для пропуска:",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
         )
     else:
         text = "✅ Категория создана!\n\nВыберите userbot для этой категории:\n\n"
         for acc in accounts:
             text += f"• <code>{acc['session_name']}</code> ({acc['phone']}) - {acc['status']}\n"
         text += "\nОтправьте имя сессии (session_name) или 'пропустить' для пропуска:"
-        await message.answer(text, parse_mode="HTML")
+        await message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard), parse_mode="HTML")
 
 
 @router.message(CategoryStates.waiting_for_session_name)
@@ -2090,11 +2140,15 @@ async def add_category_session(message: Message, state: FSMContext):
     # Пропускаем назначение userbot'а при создании - можно добавить позже
     await state.set_state(CategoryStates.waiting_for_managers_channel_id)
     
+    keyboard = [[InlineKeyboardButton(text="❌ Отмена", callback_data="category_add_cancel")]]
+    
     await message.answer(
         "✅ Категория создана!\n\n"
         "💡 <b>Совет:</b> Userbot'ы можно добавить позже в настройках категории.\n\n"
         "Отправьте ID канала менеджеров (куда будут пересылаться ответы от пользователей) "
-        "или 'пропустить' для пропуска:"
+        "или 'пропустить' для пропуска:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard),
+        parse_mode="HTML"
     )
 
 
@@ -2116,7 +2170,8 @@ async def add_category_channel(message: Message, state: FSMContext):
         try:
             channel_id = int(channel_text)
         except ValueError:
-            await message.answer("❌ ID канала должен быть числом. Попробуйте снова или отправьте 'пропустить':")
+            keyboard = [[InlineKeyboardButton(text="❌ Отмена", callback_data="category_add_cancel")]]
+            await message.answer("❌ ID канала должен быть числом. Попробуйте снова или отправьте 'пропустить':", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
             return
     
     db.update_category(category_id, {'managers_channel_id': channel_id})
@@ -2903,6 +2958,4 @@ async def admin_back(callback: CallbackQuery, state: FSMContext):
         )
     
     await _safe_callback_answer(callback)
-    await _safe_callback_answer(callback)
-    await _safe_edit_text(callback, "Выберите раздел:", reply_markup=get_main_menu(), parse_mode=None)
 
