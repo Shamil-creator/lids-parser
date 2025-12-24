@@ -220,12 +220,12 @@ class UserbotManager:
                                 channel['link'],
                                 message_text[:500]
                             )
-                        
-                        # Восстанавливаем оригинальный category_id
-                        messenger.category_id = original_category_id
 
                             # Задержка между сообщениями
                             await asyncio.sleep(config.MIN_DELAY_BETWEEN_MESSAGES)
+                        
+                        # Восстанавливаем оригинальный category_id
+                        messenger.category_id = original_category_id
 
                     except Exception as e:
                         print(f"[{session_name}] Error processing channel {channel['link']}: {e}")

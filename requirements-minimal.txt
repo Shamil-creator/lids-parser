@@ -1,0 +1,6 @@
+aiogram==3.3.0
+pyrogram==2.0.106
+# tgcrypto пропущен - Pyrogram будет использовать pyaes (медленнее, но работает)
+aiofiles==23.2.1
+python-dotenv==1.0.0
+
