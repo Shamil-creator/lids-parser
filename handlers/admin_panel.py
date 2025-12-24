@@ -1048,8 +1048,13 @@ async def add_keywords_start(callback: CallbackQuery, state: FSMContext):
     await state.set_state(AddKeywordsStates.waiting_for_keywords)
     keyboard = [[InlineKeyboardButton(text="❌ Отмена", callback_data="admin_keywords")]]
     await callback.message.edit_text(
-        "Отправьте ключевые слова через запятую или каждое с новой строки:",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
+        "Отправьте ключевые слова:\n\n"
+        "💡 <b>Форматы ввода:</b>\n"
+        "• Через запятую: <code>окна, двери, стекло</code>\n"
+        "• Каждое с новой строки:\n<code>окна\nдвери\nстекло</code>\n"
+        "• Или смешанный формат",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard),
+        parse_mode="HTML"
     )
     await callback.answer()
 
@@ -1151,8 +1156,13 @@ async def add_stopwords_start(callback: CallbackQuery, state: FSMContext):
     await state.set_state(AddStopwordsStates.waiting_for_stopwords)
     keyboard = [[InlineKeyboardButton(text="❌ Отмена", callback_data="admin_stopwords")]]
     await callback.message.edit_text(
-        "Отправьте стоп-слова через запятую или каждое с новой строки:",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
+        "Отправьте стоп-слова:\n\n"
+        "💡 <b>Форматы ввода:</b>\n"
+        "• Через запятую: <code>реклама, спам, продажа</code>\n"
+        "• Каждое с новой строки:\n<code>реклама\nспам\nпродажа</code>\n"
+        "• Или смешанный формат",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard),
+        parse_mode="HTML"
     )
     await callback.answer()
 
