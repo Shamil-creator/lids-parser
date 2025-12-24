@@ -110,7 +110,8 @@ class Messenger:
 
     async def schedule_follow_up(self, user_id: int):
         """Запланировать дожимающее сообщение"""
-        delay_minutes = config.FOLLOW_UP_DELAY_MINUTES
+        # Безопасное получение значения с дефолтом
+        delay_minutes = getattr(config, 'FOLLOW_UP_DELAY_MINUTES', 240)
         delay_seconds = delay_minutes * 60
         print(f"[{self.session_name}] ⏰ Запущен таймер повторной отправки для пользователя {user_id}: через {delay_minutes} минут ({delay_seconds} секунд)")
         

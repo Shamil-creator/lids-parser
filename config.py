@@ -36,7 +36,9 @@ ADMIN_PASSWORD = "admin251219750"
 # Задержки (в секундах)
 MIN_DELAY_BETWEEN_MESSAGES = 2
 MAX_DELAY_BETWEEN_MESSAGES = 5
-FOLLOW_UP_DELAY_HOURS = 4  # Задержка перед дожимающим сообщением
+# Задержка перед дожимающим сообщением (в минутах, по умолчанию 240 минут = 4 часа)
+FOLLOW_UP_DELAY_MINUTES = int(os.getenv("FOLLOW_UP_DELAY_MINUTES", "240"))
+FOLLOW_UP_DELAY_HOURS = FOLLOW_UP_DELAY_MINUTES / 60  # Для обратной совместимости (в часах)
 REPEAT_MESSAGE_MINUTES = int(os.getenv("REPEAT_MESSAGE_MINUTES", "10"))  # Через сколько минут можно писать снова (для групп)
 
 # Приватные группы: лимиты и задержки
