@@ -24,6 +24,11 @@ def set_userbot_manager(manager: UserbotManager):
     userbot_manager = manager
 
 
+def check_category_access(user_id: int, category_id: int) -> bool:
+    """Проверить доступ пользователя к категории"""
+    return db.can_access_category(user_id, category_id)
+
+
 # Приватные группы категории
 @router.callback_query(F.data.startswith("cat_private_groups_"))
 async def category_private_groups(callback: CallbackQuery):
@@ -32,6 +37,13 @@ async def category_private_groups(callback: CallbackQuery):
         category_id = int(callback.data.split("_")[-1])
     except Exception:
         await _safe_callback_answer(callback, "Некорректный ID", show_alert=True)
+        return
+    
+    user_id = callback.from_user.id
+    
+    # Проверяем права доступа
+    if not db.can_access_category(user_id, category_id):
+        await _safe_callback_answer(callback, "❌ Доступ запрещен", show_alert=True)
         return
     
     category = db.get_category(category_id)
@@ -146,6 +158,13 @@ async def category_public_groups(callback: CallbackQuery):
         await _safe_callback_answer(callback, "Некорректный ID", show_alert=True)
         return
     
+    user_id = callback.from_user.id
+    
+    # Проверяем права доступа
+    if not check_category_access(user_id, category_id):
+        await _safe_callback_answer(callback, "❌ Доступ запрещен", show_alert=True)
+        return
+    
     category = db.get_category(category_id)
     if not category:
         await _safe_callback_answer(callback, "Категория не найдена", show_alert=True)
@@ -256,6 +275,13 @@ async def category_userbot(callback: CallbackQuery):
         category_id = int(callback.data.split("_")[-1])
     except Exception:
         await _safe_callback_answer(callback, "Некорректный ID", show_alert=True)
+        return
+    
+    user_id = callback.from_user.id
+    
+    # Проверяем права доступа
+    if not check_category_access(user_id, category_id):
+        await _safe_callback_answer(callback, "❌ Доступ запрещен", show_alert=True)
         return
     
     category = db.get_category(category_id)
@@ -573,6 +599,13 @@ async def category_managers_channel(callback: CallbackQuery):
         await _safe_callback_answer(callback, "Некорректный ID", show_alert=True)
         return
     
+    user_id = callback.from_user.id
+    
+    # Проверяем права доступа
+    if not check_category_access(user_id, category_id):
+        await _safe_callback_answer(callback, "❌ Доступ запрещен", show_alert=True)
+        return
+    
     category = db.get_category(category_id)
     if not category:
         await _safe_callback_answer(callback, "Категория не найдена", show_alert=True)
@@ -644,6 +677,13 @@ async def category_keywords_menu(callback: CallbackQuery):
         category_id = int(callback.data.split("_")[-1])
     except Exception:
         await _safe_callback_answer(callback, "Некорректный ID", show_alert=True)
+        return
+    
+    user_id = callback.from_user.id
+    
+    # Проверяем права доступа
+    if not check_category_access(user_id, category_id):
+        await _safe_callback_answer(callback, "❌ Доступ запрещен", show_alert=True)
         return
     
     category = db.get_category(category_id)
@@ -783,6 +823,13 @@ async def category_stopwords_menu(callback: CallbackQuery):
         category_id = int(callback.data.split("_")[-1])
     except Exception:
         await _safe_callback_answer(callback, "Некорректный ID", show_alert=True)
+        return
+    
+    user_id = callback.from_user.id
+    
+    # Проверяем права доступа
+    if not check_category_access(user_id, category_id):
+        await _safe_callback_answer(callback, "❌ Доступ запрещен", show_alert=True)
         return
     
     category = db.get_category(category_id)

@@ -260,7 +260,27 @@ class Database:
                 phone TEXT,
                 source_channel TEXT,
                 original_post_text TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                category_id INTEGER,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (category_id) REFERENCES categories(id) ON DELETE SET NULL
+            )
+        """)
+        
+        # Миграция: добавляем category_id в leads если его нет
+        try:
+            cursor.execute("ALTER TABLE leads ADD COLUMN category_id INTEGER")
+        except sqlite3.OperationalError:
+            # Колонка уже существует
+            pass
+
+        # Таблица менеджеров (связь user_id с category_id)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS managers (
+                user_id INTEGER NOT NULL,
+                category_id INTEGER NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (user_id, category_id),
+                FOREIGN KEY (category_id) REFERENCES categories(id) ON DELETE CASCADE
             )
         """)
 
@@ -1378,3 +1398,175 @@ class Database:
         rows = cursor.fetchall()
         conn.close()
         return [{"category_id": row[0], "session_name": row[1]} for row in rows]
+
+    # ========== МЕНЕДЖЕРЫ ==========
+    def add_manager(self, user_id: int, category_id: int) -> bool:
+        """Добавить менеджера к категории"""
+        try:
+            conn = self.get_connection()
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT OR IGNORE INTO managers (user_id, category_id)
+                VALUES (?, ?)
+            """, (user_id, category_id))
+            conn.commit()
+            conn.close()
+            return True
+        except Exception as e:
+            print(f"Error adding manager: {e}")
+            return False
+
+    def remove_manager(self, user_id: int, category_id: int) -> bool:
+        """Удалить менеджера из категории"""
+        try:
+            conn = self.get_connection()
+            cursor = conn.cursor()
+            cursor.execute("""
+                DELETE FROM managers
+                WHERE user_id = ? AND category_id = ?
+            """, (user_id, category_id))
+            conn.commit()
+            conn.close()
+            return True
+        except Exception as e:
+            print(f"Error removing manager: {e}")
+            return False
+
+    def get_manager_category(self, user_id: int) -> Optional[int]:
+        """Получить category_id для менеджера (возвращает первый, если несколько)"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT category_id FROM managers
+            WHERE user_id = ?
+            LIMIT 1
+        """, (user_id,))
+        row = cursor.fetchone()
+        conn.close()
+        return row[0] if row else None
+
+    def get_manager_categories(self, user_id: int) -> List[int]:
+        """Получить все category_id для менеджера"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT category_id FROM managers
+            WHERE user_id = ?
+        """, (user_id,))
+        rows = cursor.fetchall()
+        conn.close()
+        return [row[0] for row in rows]
+
+    def is_manager(self, user_id: int) -> bool:
+        """Проверить является ли пользователь менеджером"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT 1 FROM managers WHERE user_id = ?", (user_id,))
+        result = cursor.fetchone() is not None
+        conn.close()
+        return result
+
+    def get_category_managers(self, category_id: int) -> List[int]:
+        """Получить список user_id менеджеров категории"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT user_id FROM managers
+            WHERE category_id = ?
+        """, (category_id,))
+        rows = cursor.fetchall()
+        conn.close()
+        return [row[0] for row in rows]
+
+    def can_access_category(self, user_id: int, category_id: int) -> bool:
+        """Проверить может ли пользователь получить доступ к категории (админ или менеджер этой категории)"""
+        if self.is_admin(user_id):
+            return True
+        manager_categories = self.get_manager_categories(user_id)
+        return category_id in manager_categories
+
+    def get_category_command(self, category_id: int) -> Optional[str]:
+        """Получить команду для категории (на основе названия)"""
+        category = self.get_category(category_id)
+        if not category:
+            return None
+        # Преобразуем название в команду: убираем пробелы, делаем нижний регистр
+        name = category['name'].lower().strip()
+        # Убираем спецсимволы, оставляем только буквы и цифры
+        import re
+        command = re.sub(r'[^а-яёa-z0-9]', '', name)
+        return command if command else None
+
+    def get_category_by_command(self, command: str) -> Optional[dict]:
+        """Получить категорию по команде"""
+        categories = self.get_all_categories()
+        for cat in categories:
+            cat_command = self.get_category_command(cat['id'])
+            if cat_command and cat_command == command.lower():
+                return cat
+        return None
+
+    # ========== СТАТИСТИКА КАТЕГОРИЙ ==========
+    def get_category_leads_count(self, category_id: int, days: Optional[int] = None) -> int:
+        """Получить количество лидов категории за период"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        if days:
+            cursor.execute("""
+                SELECT COUNT(*) FROM leads 
+                WHERE category_id = ? AND created_at >= datetime('now', '-' || ? || ' days')
+            """, (category_id, days))
+        else:
+            cursor.execute("SELECT COUNT(*) FROM leads WHERE category_id = ?", (category_id,))
+        count = cursor.fetchone()[0]
+        conn.close()
+        return count
+
+    def get_category_stats(self, category_id: int) -> dict:
+        """Получить статистику категории"""
+        groups = self.get_private_groups_by_category(category_id)
+        active_groups = [g for g in groups if g.get('is_active') and g.get('state') == 'ACTIVE']
+        keywords = self.get_category_keywords(category_id)
+        stopwords = self.get_category_stopwords(category_id)
+        userbots = self.get_category_userbots(category_id)
+        total_leads = self.get_category_leads_count(category_id)
+        today_leads = self.get_category_leads_count(category_id, days=1)
+        week_leads = self.get_category_leads_count(category_id, days=7)
+        month_leads = self.get_category_leads_count(category_id, days=30)
+        
+        return {
+            'total_groups': len(groups),
+            'active_groups': len(active_groups),
+            'keywords_count': len(keywords),
+            'stopwords_count': len(stopwords),
+            'userbots_count': len(userbots),
+            'total_leads': total_leads,
+            'today_leads': today_leads,
+            'week_leads': week_leads,
+            'month_leads': month_leads,
+        }
+
+    def get_all_categories_stats(self) -> dict:
+        """Получить статистику по всем категориям"""
+        categories = self.get_all_categories()
+        total_leads = self.get_leads_count()
+        today_leads = self.get_leads_count(days=1)
+        week_leads = self.get_leads_count(days=7)
+        month_leads = self.get_leads_count(days=30)
+        
+        categories_stats = []
+        for cat in categories:
+            cat_stats = self.get_category_stats(cat['id'])
+            categories_stats.append({
+                'category': cat,
+                'stats': cat_stats
+            })
+        
+        return {
+            'total_categories': len(categories),
+            'total_leads': total_leads,
+            'today_leads': today_leads,
+            'week_leads': week_leads,
+            'month_leads': month_leads,
+            'categories': categories_stats,
+        }

@@ -307,14 +307,30 @@ class CategoryStates(StatesGroup):
 
 
 # ========== ГЛАВНОЕ МЕНЮ ==========
-def get_main_menu() -> InlineKeyboardMarkup:
+def get_main_menu(user_id: int = None) -> InlineKeyboardMarkup:
     """Главное меню админ-панели - список категорий"""
-    categories = db.get_all_categories()
+    is_admin_user = user_id and db.is_admin(user_id)
+    
+    if is_admin_user:
+        # Админ видит все категории
+        categories = db.get_all_categories()
+    else:
+        # Менеджер видит только свою категорию
+        if user_id:
+            manager_category_id = db.get_manager_category(user_id)
+            if manager_category_id:
+                category = db.get_category(manager_category_id)
+                categories = [category] if category else []
+            else:
+                categories = []
+        else:
+            categories = []
     
     keyboard = []
     
-    # Кнопка добавления категории
-    keyboard.append([InlineKeyboardButton(text="➕ Добавить категорию", callback_data="category_add")])
+    # Кнопка добавления категории только для админа
+    if is_admin_user:
+        keyboard.append([InlineKeyboardButton(text="➕ Добавить категорию", callback_data="category_add")])
     
     # Список категорий
     if categories:
@@ -326,18 +342,27 @@ def get_main_menu() -> InlineKeyboardMarkup:
                 )
             ])
     
-    # Дополнительные разделы
-    keyboard.append([InlineKeyboardButton(text="👥 Аккаунты", callback_data="admin_accounts")])
-    keyboard.append([InlineKeyboardButton(text="📊 Статистика", callback_data="admin_stats")])
+    # Дополнительные разделы только для админа
+    if is_admin_user:
+        keyboard.append([InlineKeyboardButton(text="👥 Аккаунты", callback_data="admin_accounts")])
+        keyboard.append([InlineKeyboardButton(text="📊 Статистика", callback_data="admin_stats")])
+    else:
+        # Для менеджера только статистика его категории
+        if user_id:
+            manager_category_id = db.get_manager_category(user_id)
+            if manager_category_id:
+                keyboard.append([InlineKeyboardButton(text="📊 Статистика", callback_data=f"category_stats_{manager_category_id}")])
     
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 
-def get_category_menu(category_id: int) -> InlineKeyboardMarkup:
+def get_category_menu(category_id: int, user_id: int = None) -> InlineKeyboardMarkup:
     """Меню категории с настройками"""
     category = db.get_category(category_id)
     if not category:
         return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Назад", callback_data="admin_back")]])
+    
+    is_admin_user = user_id and db.is_admin(user_id)
     
     # Проверяем настройки категории
     userbots = db.get_category_userbots(category_id)
@@ -354,10 +379,15 @@ def get_category_menu(category_id: int) -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text=f"{'✅' if has_channel else '❌'} Канал менеджеров", callback_data=f"cat_managers_channel_{category_id}")],
         [InlineKeyboardButton(text=f"🔑 Ключевые слова ({len(keywords)})", callback_data=f"cat_keywords_{category_id}")],
         [InlineKeyboardButton(text=f"🛑 Стоп-слова ({len(stopwords)})", callback_data=f"cat_stopwords_{category_id}")],
-        [InlineKeyboardButton(text="✏️ Редактировать категорию", callback_data=f"category_edit_{category_id}")],
-        [InlineKeyboardButton(text="🗑 Удалить категорию", callback_data=f"category_delete_{category_id}")],
-        [InlineKeyboardButton(text="◀️ Назад", callback_data="admin_back")],
+        [InlineKeyboardButton(text="📊 Статистика", callback_data=f"category_stats_{category_id}")],
     ]
+    
+    # Кнопки редактирования/удаления только для админа
+    if is_admin_user:
+        keyboard.append([InlineKeyboardButton(text="✏️ Редактировать категорию", callback_data=f"category_edit_{category_id}")])
+        keyboard.append([InlineKeyboardButton(text="🗑 Удалить категорию", callback_data=f"category_delete_{category_id}")])
+    
+    keyboard.append([InlineKeyboardButton(text="◀️ Назад", callback_data="admin_back")])
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 
@@ -379,33 +409,137 @@ async def cmd_admin(message: Message):
         await message.answer(
             "📁 <b>Категории</b>\n\n"
             "У вас пока нет категорий. Создайте первую категорию для начала работы!",
-            reply_markup=get_main_menu(),
+            reply_markup=get_main_menu(user_id),
             parse_mode="HTML"
         )
     else:
-        await message.answer("Выберите категорию для настройки:", reply_markup=get_main_menu())
+        await message.answer("Выберите категорию для настройки:", reply_markup=get_main_menu(user_id))
+
+
+@router.message(F.text.startswith("/") & ~F.text.startswith("/admin251219750"))
+async def handle_category_command(message: Message):
+    """Обработчик динамических команд категорий (например /машины, /материалы)"""
+    user_id = message.from_user.id
+    command = message.text[1:].strip().lower()  # Убираем "/" и приводим к нижнему регистру
+    
+    # Ищем категорию по команде
+    category = db.get_category_by_command(command)
+    if not category:
+        # Неизвестная команда - игнорируем
+        return
+    
+    category_id = category['id']
+    
+    # Если пользователь не админ и не менеджер этой категории, добавляем его как менеджера
+    if not db.is_admin(user_id):
+        manager_categories = db.get_manager_categories(user_id)
+        if category_id not in manager_categories:
+            db.add_manager(user_id, category_id)
+    
+    # Проверяем права доступа
+    if not db.can_access_category(user_id, category_id):
+        await message.answer("❌ У вас нет доступа к этой категории.")
+        return
+    
+    # Показываем меню категории
+    category = db.get_category(category_id)
+    userbots = db.get_category_userbots(category_id)
+    groups = db.get_private_groups_by_category(category_id)
+    keywords = db.get_category_keywords(category_id)
+    stopwords = db.get_category_stopwords(category_id)
+    
+    text = f"📁 <b>{category['name']}</b>\n\n"
+    text += f"Userbot'ы: {', '.join(userbots) if userbots else 'Не назначены'}\n"
+    text += f"Канал менеджеров: <code>{category.get('managers_channel_id') or 'Не настроен'}</code>\n\n"
+    text += f"📊 Статистика:\n"
+    text += f"• Групп: {len(groups)}\n"
+    text += f"• Ключевых слов: {len(keywords)}\n"
+    text += f"• Стоп-слов: {len(stopwords)}\n"
+    
+    await message.answer(text, reply_markup=get_category_menu(category_id, user_id), parse_mode="HTML")
 
 
 # ========== СТАТИСТИКА ==========
 @router.callback_query(F.data == "admin_stats")
 async def show_stats(callback: CallbackQuery):
-    """Показать статистику"""
-    # Общая статистика
-    total_leads = db.get_leads_count()
-    today_leads = db.get_leads_count(days=1)
-    week_leads = db.get_leads_count(days=7)
-    month_leads = db.get_leads_count(days=30)
-
+    """Показать общую статистику (только для админа)"""
+    user_id = callback.from_user.id
+    
+    if not db.is_admin(user_id):
+        await _safe_callback_answer(callback, "❌ Доступ запрещен", show_alert=True)
+        return
+    
+    # Общая статистика по всем категориям
+    all_stats = db.get_all_categories_stats()
+    
     text = f"""📊 <b>Общая статистика:</b>
 
-Всего лидов: {total_leads}
-За сегодня: {today_leads}
-За 7 дней: {week_leads}
-За месяц: {month_leads}
+Всего категорий: {all_stats['total_categories']}
+Всего лидов: {all_stats['total_leads']}
+За сегодня: {all_stats['today_leads']}
+За 7 дней: {all_stats['week_leads']}
+За месяц: {all_stats['month_leads']}
+
+<b>Статистика по категориям:</b>
 """
+    
+    for item in all_stats['categories']:
+        cat = item['category']
+        stats = item['stats']
+        text += f"\n📁 <b>{cat['name']}</b>\n"
+        text += f"  • Лидов: {stats['total_leads']} (сегодня: {stats['today_leads']})\n"
+        text += f"  • Групп: {stats['total_groups']} (активных: {stats['active_groups']})\n"
+        text += f"  • Userbot'ов: {stats['userbots_count']}\n"
+    
     keyboard = [[InlineKeyboardButton(text="◀️ Назад", callback_data="admin_back")]]
-    await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard), parse_mode="HTML")
-    await callback.answer()
+    await _safe_callback_answer(callback)
+    await _safe_edit_text(callback, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard), parse_mode="HTML")
+
+
+@router.callback_query(F.data.startswith("category_stats_"))
+async def show_category_stats(callback: CallbackQuery):
+    """Показать статистику категории"""
+    try:
+        category_id = int(callback.data.split("_")[-1])
+    except Exception:
+        await _safe_callback_answer(callback, "Некорректный ID", show_alert=True)
+        return
+    
+    user_id = callback.from_user.id
+    
+    # Проверяем права доступа
+    if not db.can_access_category(user_id, category_id):
+        await _safe_callback_answer(callback, "❌ Доступ запрещен", show_alert=True)
+        return
+    
+    category = db.get_category(category_id)
+    if not category:
+        await _safe_callback_answer(callback, "Категория не найдена", show_alert=True)
+        return
+    
+    stats = db.get_category_stats(category_id)
+    
+    text = f"""📊 <b>Статистика: {category['name']}</b>
+
+<b>Лиды:</b>
+• Всего: {stats['total_leads']}
+• За сегодня: {stats['today_leads']}
+• За 7 дней: {stats['week_leads']}
+• За месяц: {stats['month_leads']}
+
+<b>Группы:</b>
+• Всего: {stats['total_groups']}
+• Активных: {stats['active_groups']}
+
+<b>Настройки:</b>
+• Userbot'ов: {stats['userbots_count']}
+• Ключевых слов: {stats['keywords_count']}
+• Стоп-слов: {stats['stopwords_count']}
+"""
+    
+    keyboard = [[InlineKeyboardButton(text="◀️ Назад", callback_data=f"category_menu_{category_id}")]]
+    await _safe_callback_answer(callback)
+    await _safe_edit_text(callback, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard), parse_mode="HTML")
 
 
 # ========== ПРИВАТНЫЕ ГРУППЫ (STATE MACHINE) ==========
@@ -747,10 +881,11 @@ async def add_private_group_private_process(message: Message, state: FSMContext)
     if not group_id:
         await message.answer("❌ Не удалось добавить (возможно ошибка БД).")
         await state.clear()
+        user_id = message.from_user.id
         if category_id:
-            await message.answer("Выберите раздел:", reply_markup=get_category_menu(category_id))
+            await message.answer("Выберите раздел:", reply_markup=get_category_menu(category_id, user_id))
         else:
-            await message.answer("Выберите раздел:", reply_markup=get_main_menu())
+            await message.answer("Выберите раздел:", reply_markup=get_main_menu(user_id))
         return
 
     await message.answer("✅ Добавлено.")
@@ -758,7 +893,8 @@ async def add_private_group_private_process(message: Message, state: FSMContext)
     if category_id:
         # Если это добавление в категорию, возвращаемся в меню категории
         await state.clear()
-        await message.answer("Выберите раздел:", reply_markup=get_category_menu(category_id))
+        user_id = message.from_user.id
+        await message.answer("Выберите раздел:", reply_markup=get_category_menu(category_id, user_id))
     else:
         # Старое поведение для обратной совместимости
         await state.set_state(AddPrivateGroupStates.waiting_for_private_invite_link)
@@ -781,10 +917,11 @@ async def add_private_group_public_process(message: Message, state: FSMContext):
     if not group_id:
         await message.answer("❌ Не удалось добавить (возможно ошибка БД).")
         await state.clear()
+        user_id = message.from_user.id
         if category_id:
-            await message.answer("Выберите раздел:", reply_markup=get_category_menu(category_id))
+            await message.answer("Выберите раздел:", reply_markup=get_category_menu(category_id, user_id))
         else:
-            await message.answer("Выберите раздел:", reply_markup=get_main_menu())
+            await message.answer("Выберите раздел:", reply_markup=get_main_menu(user_id))
         return
 
     await message.answer("✅ Добавлено.")
@@ -792,7 +929,8 @@ async def add_private_group_public_process(message: Message, state: FSMContext):
     if category_id:
         # Если это добавление в категорию, возвращаемся в меню категории
         await state.clear()
-        await message.answer("Выберите раздел:", reply_markup=get_category_menu(category_id))
+        user_id = message.from_user.id
+        await message.answer("Выберите раздел:", reply_markup=get_category_menu(category_id, user_id))
     else:
         # Старое поведение для обратной совместимости
         await state.set_state(AddPrivateGroupStates.waiting_for_public_link)
@@ -1344,7 +1482,8 @@ async def add_account_session_file(message: Message, state: FSMContext):
                     parse_mode="HTML"
                 )
                 await state.clear()
-                await message.answer("Выберите раздел:", reply_markup=get_category_menu(category_id))
+                user_id = message.from_user.id
+                await message.answer("Выберите раздел:", reply_markup=get_category_menu(category_id, user_id))
             else:
                 # Обычное добавление (не для категории)
                 await message.answer(
@@ -1496,7 +1635,8 @@ async def add_account_code(message: Message, state: FSMContext):
                     f"API credentials сохранены в БД"
                 )
                 await state.clear()
-                await message.answer("Выберите раздел:", reply_markup=get_category_menu(category_id))
+                user_id = message.from_user.id
+                await message.answer("Выберите раздел:", reply_markup=get_category_menu(category_id, user_id))
             else:
                 # Обычное добавление (не для категории)
                 await message.answer(
@@ -1576,7 +1716,8 @@ async def add_account_password(message: Message, state: FSMContext):
                 f"API credentials сохранены в БД"
             )
             await state.clear()
-            await message.answer("Выберите раздел:", reply_markup=get_category_menu(category_id))
+            user_id = message.from_user.id
+            await message.answer("Выберите раздел:", reply_markup=get_category_menu(category_id, user_id))
         else:
             # Обычное добавление (не для категории)
             await message.answer(
@@ -1742,7 +1883,7 @@ async def set_managers_channel_process(message: Message, state: FSMContext):
                     f"📢 <b>Канал менеджеров: {category['name']}</b>\n\n"
                     f"Текущий канал: <code>{channel_id}</code>\n\n"
                     f"Сообщения от пользователей будут пересылаться в этот канал.",
-                    reply_markup=get_category_menu(category_id),
+                    reply_markup=get_category_menu(category_id, message.from_user.id),
                     parse_mode="HTML"
                 )
             else:
@@ -1806,6 +1947,13 @@ async def show_category_menu(callback: CallbackQuery):
         await _safe_callback_answer(callback, "Некорректный ID", show_alert=True)
         return
     
+    user_id = callback.from_user.id
+    
+    # Проверяем права доступа
+    if not db.can_access_category(user_id, category_id):
+        await _safe_callback_answer(callback, "❌ Доступ запрещен", show_alert=True)
+        return
+    
     category = db.get_category(category_id)
     if not category:
         await _safe_callback_answer(callback, "Категория не найдена", show_alert=True)
@@ -1817,7 +1965,6 @@ async def show_category_menu(callback: CallbackQuery):
     stopwords = db.get_category_stopwords(category_id)
     
     text = f"📁 <b>{category['name']}</b>\n\n"
-    text += f"ID: <code>{category_id}</code>\n"
     text += f"Userbot'ы: {', '.join(userbots) if userbots else 'Не назначены'}\n"
     text += f"Канал менеджеров: <code>{category.get('managers_channel_id') or 'Не настроен'}</code>\n\n"
     text += f"📊 Статистика:\n"
@@ -1826,7 +1973,7 @@ async def show_category_menu(callback: CallbackQuery):
     text += f"• Стоп-слов: {len(stopwords)}\n"
     
     await _safe_callback_answer(callback)
-    await _safe_edit_text(callback, text, reply_markup=get_category_menu(category_id), parse_mode="HTML")
+    await _safe_edit_text(callback, text, reply_markup=get_category_menu(category_id, user_id), parse_mode="HTML")
 
 
 @router.callback_query(F.data == "admin_categories")
@@ -1871,11 +2018,19 @@ async def show_categories(callback: CallbackQuery):
 @router.callback_query(F.data == "category_add")
 async def add_category_start(callback: CallbackQuery, state: FSMContext):
     """Начать создание категории"""
+    user_id = callback.from_user.id
+    
+    # Только админ может создавать категории
+    if not db.is_admin(user_id):
+        await _safe_callback_answer(callback, "❌ Только администратор может создавать категории", show_alert=True)
+        return
+    
     await state.set_state(CategoryStates.waiting_for_name)
     await _safe_callback_answer(callback)
     await _safe_edit_text(
         callback,
-        "📁 <b>Создание категории</b>\n\nОтправьте название категории:",
+        "📁 <b>Создание категории</b>\n\nОтправьте название категории:\n\n"
+        "💡 <b>Важно:</b> Команда для категории будет создана автоматически на основе названия (например, 'Машины → /машины)",
         parse_mode="HTML"
     )
 
@@ -1968,10 +2123,13 @@ async def add_category_channel(message: Message, state: FSMContext):
     await state.clear()
     
     category = db.get_category(category_id)
+    command = db.get_category_command(category_id)
+    command_text = f"\n\n💡 <b>Команда для категории:</b> <code>/{command}</code>\n" if command else ""
+    
     await message.answer(
-        f"✅ Категория '{category['name']}' создана!\n\n"
+        f"✅ Категория '{category['name']}' создана!{command_text}\n\n"
         f"Теперь вы можете настроить категорию:",
-        reply_markup=get_category_menu(category_id),
+        reply_markup=get_category_menu(category_id, message.from_user.id),
         parse_mode="HTML"
     )
 
@@ -2182,7 +2340,6 @@ async def view_category(callback: CallbackQuery):
     stopwords = db.get_category_stopwords(category_id)
     
     text = f"📁 <b>{category['name']}</b>\n\n"
-    text += f"ID: <code>{category_id}</code>\n"
     text += f"Статус: {'✅ Активна' if is_active else '⚪ Неактивна'}\n"
     userbots = db.get_category_userbots(category_id)
     userbots_str = ", ".join(userbots) if userbots else "Не назначены"
@@ -2254,6 +2411,13 @@ async def deactivate_category(callback: CallbackQuery):
 @router.callback_query(F.data.startswith("category_delete_"))
 async def delete_category_confirm(callback: CallbackQuery):
     """Подтверждение удаления категории"""
+    user_id = callback.from_user.id
+    
+    # Только админ может удалять категории
+    if not db.is_admin(user_id):
+        await _safe_callback_answer(callback, "❌ Только администратор может удалять категории", show_alert=True)
+        return
+    
     try:
         category_id = int(callback.data.split("_")[-1])
     except Exception:
@@ -2285,6 +2449,13 @@ async def delete_category_confirm(callback: CallbackQuery):
 @router.callback_query(F.data.startswith("category_delete_confirm_"))
 async def delete_category_execute(callback: CallbackQuery):
     """Удалить категорию"""
+    user_id = callback.from_user.id
+    
+    # Только админ может удалять категории
+    if not db.is_admin(user_id):
+        await _safe_callback_answer(callback, "❌ Только администратор может удалять категории", show_alert=True)
+        return
+    
     try:
         category_id = int(callback.data.split("_")[-1])
     except Exception:
@@ -2712,6 +2883,26 @@ async def admin_back(callback: CallbackQuery, state: FSMContext):
         await state.clear()
     except Exception:
         pass
+    
+    user_id = callback.from_user.id
+    categories = db.get_all_categories()
+    
+    if not categories:
+        await _safe_edit_text(
+            callback,
+            "📁 <b>Категории</b>\n\n"
+            "У вас пока нет категорий. Создайте первую категорию для начала работы!",
+            reply_markup=get_main_menu(user_id),
+            parse_mode="HTML"
+        )
+    else:
+        await _safe_edit_text(
+            callback,
+            "Выберите категорию для настройки:",
+            reply_markup=get_main_menu(user_id)
+        )
+    
+    await _safe_callback_answer(callback)
     await _safe_callback_answer(callback)
     await _safe_edit_text(callback, "Выберите раздел:", reply_markup=get_main_menu(), parse_mode=None)
 
