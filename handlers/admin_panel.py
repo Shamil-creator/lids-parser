@@ -1,6 +1,7 @@
 """
 Админ-панель для управления системой лидгенерации
 """
+from typing import Dict
 from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.filters import Command
@@ -19,6 +20,23 @@ import config
 router = Router()
 db = Database()
 userbot_manager: UserbotManager = None
+
+# ===== Глобальный словарь для хранения активных клиентов авторизации =====
+# Ключ: user_id (int), значение: Client (pyrogram.Client)
+# Используется для сохранения сессии между send_code и sign_in
+_authorization_clients: Dict[int, Client] = {}
+
+
+async def _cleanup_authorization_client(user_id: int):
+    """Очистить клиент авторизации для пользователя (отключить и удалить из словаря)"""
+    if user_id in _authorization_clients:
+        client = _authorization_clients[user_id]
+        try:
+            await client.disconnect()
+        except Exception:
+            pass  # Игнорируем ошибки при отключении
+        del _authorization_clients[user_id]
+
 
 # ===== Константы UI приватных групп =====
 PRIVATE_GROUPS_PAGE_SIZE = 8
@@ -1200,6 +1218,9 @@ async def edit_template_process(message: Message, state: FSMContext):
 async def show_accounts(callback: CallbackQuery, state: FSMContext):
     """Показать меню аккаунтов"""
     # Очищаем state при возврате в меню
+    user_id = callback.from_user.id
+    # Очищаем клиент авторизации, если он существует
+    await _cleanup_authorization_client(user_id)
     await state.clear()
     
     accounts = db.get_all_accounts()
@@ -1253,6 +1274,7 @@ async def add_account_simple_start(callback: CallbackQuery, state: FSMContext):
 async def add_account_simple_phone(message: Message, state: FSMContext):
     """Получить телефон для упрощенного добавления"""
     phone = message.text.strip()
+    user_id = message.from_user.id
     global_api = db.get_global_api_settings()
     
     if not global_api or not global_api.get('api_id') or not global_api.get('api_hash'):
@@ -1263,8 +1285,11 @@ async def add_account_simple_phone(message: Message, state: FSMContext):
     api_id = int(global_api['api_id'])
     api_hash = global_api['api_hash']
     
+    # Очищаем старый клиент, если он существует
+    await _cleanup_authorization_client(user_id)
+    
     # Создаем временную сессию для авторизации
-    session_name = f"temp_{message.from_user.id}"
+    session_name = f"temp_{user_id}"
     
     # Удаляем старый session файл, если он существует (на случай повторного запроса)
     old_session_path = os.path.join(config.SESSIONS_DIR, f"{session_name}.session")
@@ -1274,6 +1299,7 @@ async def add_account_simple_phone(message: Message, state: FSMContext):
         except:
             pass
     
+    client = None
     try:
         client = Client(
             name=session_name,
@@ -1284,6 +1310,10 @@ async def add_account_simple_phone(message: Message, state: FSMContext):
         
         await client.connect()
         sent_code = await client.send_code(phone)
+        
+        # Сохраняем клиент в глобальный словарь вместо отключения
+        _authorization_clients[user_id] = client
+        
         await state.update_data(
             phone=phone,
             api_id=api_id,
@@ -1300,55 +1330,72 @@ async def add_account_simple_phone(message: Message, state: FSMContext):
             reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard),
             parse_mode="HTML"
         )
-        await client.disconnect()
+        # НЕ отключаем клиент - он должен оставаться подключенным до завершения авторизации
         
     except Exception as e:
+        # Очищаем клиент при ошибке
+        if client:
+            try:
+                await client.disconnect()
+            except:
+                pass
+        if user_id in _authorization_clients:
+            del _authorization_clients[user_id]
         await message.answer(f"❌ Ошибка: {e}")
 
 
 @router.callback_query(F.data == "account_resend_code")
 async def resend_code(callback: CallbackQuery, state: FSMContext):
     """Перезапросить код подтверждения"""
+    user_id = callback.from_user.id
     data = await state.get_data()
     
     # Проверяем, что есть необходимые данные
     if not data.get('phone') or not data.get('api_id') or not data.get('api_hash'):
         await callback.answer("❌ Данные сессии утеряны. Начните добавление аккаунта заново.", show_alert=True)
         await state.clear()
+        await _cleanup_authorization_client(user_id)
         return
     
     phone = data['phone']
     api_id = data['api_id']
     api_hash = data['api_hash']
-    session_name = data.get('session_name', f"temp_{callback.from_user.id}")
+    session_name = data.get('session_name', f"temp_{user_id}")
     
-    client = None
-    try:
-        await callback.answer("Отправка нового кода...")
-        
-        # Удаляем старый session файл, чтобы избежать конфликтов
+    # Пытаемся использовать существующий клиент, если он есть
+    client = _authorization_clients.get(user_id)
+    use_existing_client = client is not None
+    
+    if not use_existing_client:
+        # Если клиента нет, создаем новый
         old_session_path = os.path.join(config.SESSIONS_DIR, f"{session_name}.session")
         if os.path.exists(old_session_path):
             try:
                 os.remove(old_session_path)
             except:
                 pass
+    
+    try:
+        await callback.answer("Отправка нового кода...")
         
-        client = Client(
-            name=session_name,
-            workdir=config.SESSIONS_DIR,
-            api_id=api_id,
-            api_hash=api_hash
-        )
+        if not use_existing_client:
+            client = Client(
+                name=session_name,
+                workdir=config.SESSIONS_DIR,
+                api_id=api_id,
+                api_hash=api_hash
+            )
+            await client.connect()
+            # Сохраняем новый клиент в словарь
+            _authorization_clients[user_id] = client
         
-        await client.connect()
         sent_code = await client.send_code(phone)
         
         # Обновляем phone_code_hash в state
         await state.update_data(phone_code_hash=sent_code.phone_code_hash)
         await state.set_state(AddAccountStates.waiting_for_code)
         
-        await client.disconnect()
+        # НЕ отключаем клиент - он должен оставаться подключенным
         
         category_id = data.get('category_id')
         if category_id:
@@ -1369,11 +1416,8 @@ async def resend_code(callback: CallbackQuery, state: FSMContext):
         )
         
     except Exception as e:
-        if client:
-            try:
-                await client.disconnect()
-            except:
-                pass
+        # Очищаем клиент при ошибке
+        await _cleanup_authorization_client(user_id)
         
         await callback.answer(f"❌ Ошибка при отправке кода: {e}", show_alert=True)
         await callback.message.edit_text(
@@ -1736,12 +1780,16 @@ async def add_account_api_hash(message: Message, state: FSMContext):
 async def add_account_phone(message: Message, state: FSMContext):
     """Получить телефон и начать авторизацию"""
     phone = message.text.strip()
+    user_id = message.from_user.id
     data = await state.get_data()
     api_id = data['api_id']
     api_hash = data['api_hash']
 
+    # Очищаем старый клиент, если он существует
+    await _cleanup_authorization_client(user_id)
+
     # Создаем временную сессию для авторизации
-    session_name = f"temp_{message.from_user.id}"
+    session_name = f"temp_{user_id}"
     session_path = os.path.join(config.SESSIONS_DIR, f"{session_name}.session")
     
     # Удаляем старый session файл, если он существует (на случай повторного запроса)
@@ -1751,6 +1799,7 @@ async def add_account_phone(message: Message, state: FSMContext):
         except:
             pass
 
+    client = None
     try:
         client = Client(
             name=session_name,
@@ -1761,6 +1810,10 @@ async def add_account_phone(message: Message, state: FSMContext):
 
         await client.connect()
         sent_code = await client.send_code(phone)
+        
+        # Сохраняем клиент в глобальный словарь вместо отключения
+        _authorization_clients[user_id] = client
+        
         await state.update_data(
             phone=phone,
             api_id=api_id,
@@ -1777,9 +1830,17 @@ async def add_account_phone(message: Message, state: FSMContext):
             reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard),
             parse_mode="HTML"
         )
-        await client.disconnect()
+        # НЕ отключаем клиент - он должен оставаться подключенным до завершения авторизации
 
     except Exception as e:
+        # Очищаем клиент при ошибке
+        if client:
+            try:
+                await client.disconnect()
+            except:
+                pass
+        if user_id in _authorization_clients:
+            del _authorization_clients[user_id]
         await message.answer(f"❌ Ошибка: {e}")
 
 
@@ -1792,6 +1853,7 @@ async def add_account_code(message: Message, state: FSMContext):
         await message.answer("❌ Код должен содержать только цифры. Попробуйте еще раз.")
         return
     
+    user_id = message.from_user.id
     data = await state.get_data()
     session_name = data['session_name']
     phone = data['phone']
@@ -1806,18 +1868,21 @@ async def add_account_code(message: Message, state: FSMContext):
             parse_mode="HTML"
         )
         await state.clear()
+        await _cleanup_authorization_client(user_id)
         return
 
-    client = None
-    try:
-        client = Client(
-            name=session_name,
-            workdir=config.SESSIONS_DIR,
-            api_id=api_id,
-            api_hash=api_hash
+    # Получаем клиент из глобального словаря вместо создания нового
+    client = _authorization_clients.get(user_id)
+    if not client:
+        await message.answer(
+            "❌ <b>Ошибка:</b> Сессия авторизации утеряна.\n\n"
+            "Пожалуйста, начните процесс добавления аккаунта заново.",
+            parse_mode="HTML"
         )
-
-        await client.connect()
+        await state.clear()
+        return
+    
+    try:
         try:
             await client.sign_in(phone, phone_code_hash, code)
             me = await client.get_me()
@@ -1827,7 +1892,8 @@ async def add_account_code(message: Message, state: FSMContext):
             old_path = os.path.join(config.SESSIONS_DIR, f"{session_name}.session")
             new_path = os.path.join(config.SESSIONS_DIR, f"{final_session_name}.session")
 
-            await client.disconnect()
+            # Отключаем клиент и очищаем из словаря после успешной авторизации
+            await _cleanup_authorization_client(user_id)
 
             if os.path.exists(old_path):
                 os.rename(old_path, new_path)
@@ -1852,7 +1918,6 @@ async def add_account_code(message: Message, state: FSMContext):
                     f"API credentials сохранены в БД"
                 )
                 await state.clear()
-                user_id = message.from_user.id
                 await message.answer("Выберите раздел:", reply_markup=get_category_menu(category_id, user_id))
             else:
                 # Обычное добавление (не для категории)
@@ -1871,49 +1936,27 @@ async def add_account_code(message: Message, state: FSMContext):
                 await message.answer("Выберите раздел:", reply_markup=get_main_menu(message.from_user.id))
 
         except SessionPasswordNeeded:
+            # Клиент остается в словаре для использования в password handler
             await state.set_state(AddAccountStates.waiting_for_password)
             keyboard = [[InlineKeyboardButton(text="❌ Отмена", callback_data="admin_accounts")]]
             await message.answer("Аккаунт защищен 2FA. Отправьте пароль:", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
-            if client:
-                try:
-                    await client.disconnect()
-                except:
-                    pass
 
     except (PhoneCodeInvalid, PhoneCodeExpired) as e:
-        if client:
-            try:
-                await client.disconnect()
-            except:
-                pass
-        
         error_msg = str(e).lower()
         data = await state.get_data()
         category_id = data.get('category_id')
         phone = data.get('phone')
-        api_id = data.get('api_id')
-        api_hash = data.get('api_hash')
-        session_name = data.get('session_name')
         
-        # Если код истек, автоматически запрашиваем новый код
+        # Если код истек, автоматически запрашиваем новый код используя существующий клиент
         if "expired" in error_msg or isinstance(e, PhoneCodeExpired):
             try:
                 await message.answer("⏳ Автоматически запрашиваю новый код...")
                 
-                # Запрашиваем новый код
-                resend_client = Client(
-                    name=session_name,
-                    workdir=config.SESSIONS_DIR,
-                    api_id=api_id,
-                    api_hash=api_hash
-                )
-                await resend_client.connect()
-                sent_code = await resend_client.send_code(phone)
-                
-                # Обновляем phone_code_hash
-                await state.update_data(phone_code_hash=sent_code.phone_code_hash)
-                
-                await resend_client.disconnect()
+                # Используем существующий клиент для запроса нового кода
+                if client:
+                    sent_code = await client.send_code(phone)
+                    # Обновляем phone_code_hash
+                    await state.update_data(phone_code_hash=sent_code.phone_code_hash)
                 
                 if category_id:
                     keyboard = [
@@ -1966,11 +2009,8 @@ async def add_account_code(message: Message, state: FSMContext):
         
         await message.answer(msg_text, reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard), parse_mode="HTML")
     except Exception as e:
-        if client:
-            try:
-                await client.disconnect()
-            except:
-                pass
+        # Очищаем клиент при необработанной ошибке
+        await _cleanup_authorization_client(user_id)
         data = await state.get_data()
         category_id = data.get('category_id')
         if category_id:
@@ -1984,21 +2024,25 @@ async def add_account_code(message: Message, state: FSMContext):
 async def add_account_password(message: Message, state: FSMContext):
     """Получить пароль 2FA"""
     password = message.text.strip()
+    user_id = message.from_user.id
     data = await state.get_data()
     session_name = data['session_name']
     phone = data['phone']
     api_id = data['api_id']
     api_hash = data['api_hash']
 
-    try:
-        client = Client(
-            name=session_name,
-            workdir=config.SESSIONS_DIR,
-            api_id=api_id,
-            api_hash=api_hash
+    # Получаем клиент из глобального словаря вместо создания нового
+    client = _authorization_clients.get(user_id)
+    if not client:
+        await message.answer(
+            "❌ <b>Ошибка:</b> Сессия авторизации утеряна.\n\n"
+            "Пожалуйста, начните процесс добавления аккаунта заново.",
+            parse_mode="HTML"
         )
+        await state.clear()
+        return
 
-        await client.connect()
+    try:
         await client.check_password(password)
         me = await client.get_me()
 
@@ -2007,7 +2051,8 @@ async def add_account_password(message: Message, state: FSMContext):
         old_path = os.path.join(config.SESSIONS_DIR, f"{session_name}.session")
         new_path = os.path.join(config.SESSIONS_DIR, f"{final_session_name}.session")
 
-        await client.disconnect()
+        # Отключаем клиент и очищаем из словаря после успешной авторизации
+        await _cleanup_authorization_client(user_id)
 
         if os.path.exists(old_path):
             os.rename(old_path, new_path)
@@ -2032,7 +2077,6 @@ async def add_account_password(message: Message, state: FSMContext):
                 f"API credentials сохранены в БД"
             )
             await state.clear()
-            user_id = message.from_user.id
             await message.answer("Выберите раздел:", reply_markup=get_category_menu(category_id, user_id))
         else:
             # Обычное добавление (не для категории)
@@ -2051,6 +2095,8 @@ async def add_account_password(message: Message, state: FSMContext):
             await message.answer("Выберите раздел:", reply_markup=get_main_menu(message.from_user.id))
 
     except Exception as e:
+        # Очищаем клиент при ошибке
+        await _cleanup_authorization_client(user_id)
         await message.answer(f"❌ Ошибка: {e}")
 
 
