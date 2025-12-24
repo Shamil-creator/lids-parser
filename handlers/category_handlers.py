@@ -112,10 +112,20 @@ async def cat_add_private_group_process(message: Message, state: FSMContext):
     category_id = data.get('category_id')
     
     if not category_id:
+        await message.answer("❌ Ошибка: категория не найдена. Начните заново.")
+        await state.clear()
+        return
+    
+    # Проверяем что категория существует
+    category = db.get_category(category_id)
+    if not category:
+        await message.answer("❌ Ошибка: категория не найдена.")
+        await state.clear()
         return
     
     if not _is_private_invite_link(invite_link):
-        await message.answer("❌ Формат не похож на приватный invite. Отправьте `https://t.me/+HASH` или `https://t.me/joinchat/HASH` или `+HASH`.")
+        keyboard = [[InlineKeyboardButton(text="❌ Отмена", callback_data=f"category_menu_{category_id}")]]
+        await message.answer("❌ Формат не похож на приватный invite. Отправьте `https://t.me/+HASH` или `https://t.me/joinchat/HASH` или `+HASH`.", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
         return
 
     group_id = db.add_private_group(invite_link, category_id=category_id)
@@ -231,10 +241,20 @@ async def cat_add_public_group_process(message: Message, state: FSMContext):
     category_id = data.get('category_id')
     
     if not category_id:
+        await message.answer("❌ Ошибка: категория не найдена. Начните заново.")
+        await state.clear()
+        return
+    
+    # Проверяем что категория существует
+    category = db.get_category(category_id)
+    if not category:
+        await message.answer("❌ Ошибка: категория не найдена.")
+        await state.clear()
         return
     
     if not _is_public_target(public_link):
-        await message.answer("❌ Формат не похож на публичный username/ссылку. Пример: `@username` или `https://t.me/username`.")
+        keyboard = [[InlineKeyboardButton(text="❌ Отмена", callback_data=f"category_menu_{category_id}")]]
+        await message.answer("❌ Формат не похож на публичный username/ссылку. Пример: `@username` или `https://t.me/username`.", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
         return
 
     group_id = db.add_private_group(public_link, category_id=category_id)

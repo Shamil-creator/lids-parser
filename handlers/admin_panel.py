@@ -441,7 +441,7 @@ async def handle_category_command(message: Message):
             # Обновляем список после добавления
             manager_categories = db.get_manager_categories(user_id)
         
-        # Проверяем права доступа
+        # Проверяем права доступа для менеджера
         if category_id not in manager_categories:
             await message.answer("❌ У вас нет доступа к этой категории.")
             return
@@ -883,8 +883,19 @@ async def add_private_group_private_process(message: Message, state: FSMContext)
     category_id = data.get('category_id')
     
     if not _is_private_invite_link(invite_link):
-        await message.answer("❌ Формат не похож на приватный invite. Отправьте `https://t.me/+HASH` или `https://t.me/joinchat/HASH` или `+HASH`.")
+        keyboard = []
+        if category_id:
+            keyboard = [[InlineKeyboardButton(text="❌ Отмена", callback_data=f"category_menu_{category_id}")]]
+        await message.answer("❌ Формат не похож на приватный invite. Отправьте `https://t.me/+HASH` или `https://t.me/joinchat/HASH` или `+HASH`.", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard) if keyboard else None)
         return
+
+    # Проверяем category_id если он был передан
+    if category_id is not None:
+        category = db.get_category(category_id)
+        if not category:
+            await message.answer("❌ Категория не найдена.")
+            await state.clear()
+            return
 
     group_id = db.add_private_group(invite_link, category_id=category_id)
     if not group_id:
@@ -919,8 +930,19 @@ async def add_private_group_public_process(message: Message, state: FSMContext):
     category_id = data.get('category_id')
     
     if not _is_public_target(public_link):
-        await message.answer("❌ Формат не похож на публичный username/ссылку. Пример: `@username` или `https://t.me/username`.")
+        keyboard = []
+        if category_id:
+            keyboard = [[InlineKeyboardButton(text="❌ Отмена", callback_data=f"category_menu_{category_id}")]]
+        await message.answer("❌ Формат не похож на публичный username/ссылку. Пример: `@username` или `https://t.me/username`.", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard) if keyboard else None)
         return
+
+    # Проверяем category_id если он был передан
+    if category_id is not None:
+        category = db.get_category(category_id)
+        if not category:
+            await message.answer("❌ Категория не найдена.")
+            await state.clear()
+            return
 
     group_id = db.add_private_group(public_link, category_id=category_id)
     if not group_id:
@@ -1018,7 +1040,7 @@ async def add_keywords_process(message: Message, state: FSMContext):
     count = db.add_keywords(words)
     await message.answer(f"✅ Добавлено {count} ключевых слов!")
     await state.clear()
-    await message.answer("Выберите раздел:", reply_markup=get_main_menu())
+    await message.answer("Выберите раздел:", reply_markup=get_main_menu(message.from_user.id))
 
 
 @router.callback_query(F.data == "keywords_delete")
@@ -1046,9 +1068,14 @@ async def delete_keywords_start(callback: CallbackQuery):
 @router.callback_query(F.data.startswith("keyword_delete_"))
 async def delete_keyword(callback: CallbackQuery):
     """Удалить ключевое слово"""
-    keyword_id = int(callback.data.split("_")[-1])
+    try:
+        keyword_id = int(callback.data.split("_")[-1])
+    except (ValueError, IndexError):
+        await _safe_callback_answer(callback, "Некорректный ID", show_alert=True)
+        return
+    
     db.delete_keywords([keyword_id])
-    await callback.answer("Удалено", show_alert=True)
+    await _safe_callback_answer(callback, "Удалено", show_alert=True)
     await show_keywords(callback)
 
 
@@ -1084,7 +1111,7 @@ async def add_stopwords_process(message: Message, state: FSMContext):
     count = db.add_stopwords(words)
     await message.answer(f"✅ Добавлено {count} стоп-слов!")
     await state.clear()
-    await message.answer("Выберите раздел:", reply_markup=get_main_menu())
+    await message.answer("Выберите раздел:", reply_markup=get_main_menu(message.from_user.id))
 
 
 @router.callback_query(F.data == "stopwords_delete")
@@ -1112,9 +1139,14 @@ async def delete_stopwords_start(callback: CallbackQuery):
 @router.callback_query(F.data.startswith("stopword_delete_"))
 async def delete_stopword(callback: CallbackQuery):
     """Удалить стоп-слово"""
-    stopword_id = int(callback.data.split("_")[-1])
+    try:
+        stopword_id = int(callback.data.split("_")[-1])
+    except (ValueError, IndexError):
+        await _safe_callback_answer(callback, "Некорректный ID", show_alert=True)
+        return
+    
     db.delete_stopwords([stopword_id])
-    await callback.answer("Удалено", show_alert=True)
+    await _safe_callback_answer(callback, "Удалено", show_alert=True)
     await show_stopwords(callback)
 
 
@@ -1148,7 +1180,7 @@ async def edit_template_process(message: Message, state: FSMContext):
     db.update_template(template)
     await message.answer("✅ Шаблон обновлен!")
     await state.clear()
-    await message.answer("Выберите раздел:", reply_markup=get_main_menu())
+    await message.answer("Выберите раздел:", reply_markup=get_main_menu(message.from_user.id))
 
 
 # ========== АККАУНТЫ ==========
@@ -1356,7 +1388,7 @@ async def api_settings_api_hash(message: Message, state: FSMContext):
         f"'📱 Добавить по телефону' - потребуется только номер телефона!"
     )
     await state.clear()
-    await message.answer("Выберите раздел:", reply_markup=get_main_menu())
+    await message.answer("Выберите раздел:", reply_markup=get_main_menu(message.from_user.id))
 
 
 @router.callback_query(F.data == "api_settings_edit")
@@ -1510,7 +1542,7 @@ async def add_account_session_file(message: Message, state: FSMContext):
                     await userbot_manager.add_client(session_name, phone)
                 
                 await state.clear()
-                await message.answer("Выберите раздел:", reply_markup=get_main_menu())
+                await message.answer("Выберите раздел:", reply_markup=get_main_menu(message.from_user.id))
             
         except Exception as e:
             # Если не получилось подключиться, возможно нужны API credentials
@@ -1660,7 +1692,7 @@ async def add_account_code(message: Message, state: FSMContext):
                     await userbot_manager.add_client(final_session_name, phone)
 
                 await state.clear()
-                await message.answer("Выберите раздел:", reply_markup=get_main_menu())
+                await message.answer("Выберите раздел:", reply_markup=get_main_menu(message.from_user.id))
 
         except SessionPasswordNeeded:
             await state.set_state(AddAccountStates.waiting_for_password)
@@ -1741,7 +1773,7 @@ async def add_account_password(message: Message, state: FSMContext):
                 await userbot_manager.add_client(final_session_name, phone)
 
             await state.clear()
-            await message.answer("Выберите раздел:", reply_markup=get_main_menu())
+            await message.answer("Выберите раздел:", reply_markup=get_main_menu(message.from_user.id))
 
     except Exception as e:
         await message.answer(f"❌ Ошибка: {e}")
@@ -2032,7 +2064,10 @@ async def add_category_cancel(callback: CallbackQuery, state: FSMContext):
     
     # Если категория уже была создана, удаляем её
     if category_id:
-        db.delete_category(category_id)
+        # Проверяем что категория существует перед удалением
+        category = db.get_category(category_id)
+        if category:
+            db.delete_category(category_id)
     
     await state.clear()
     user_id = callback.from_user.id
@@ -2277,7 +2312,7 @@ async def edit_category_name_process(message: Message, state: FSMContext):
         await message.answer("❌ Ошибка при обновлении названия.")
     
     await state.clear()
-    await message.answer("Выберите раздел:", reply_markup=get_main_menu())
+    await message.answer("Выберите раздел:", reply_markup=get_main_menu(message.from_user.id))
 
 
 @router.callback_query(F.data.startswith("category_edit_session_"))
@@ -2370,7 +2405,7 @@ async def edit_category_channel_process(message: Message, state: FSMContext):
         await message.answer("❌ Ошибка при обновлении канала менеджеров.")
     
     await state.clear()
-    await message.answer("Выберите раздел:", reply_markup=get_main_menu())
+    await message.answer("Выберите раздел:", reply_markup=get_main_menu(message.from_user.id))
 
 
 @router.callback_query(F.data.startswith("category_view_"))
