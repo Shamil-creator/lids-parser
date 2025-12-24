@@ -20,9 +20,11 @@ db = Database()
 
 
 class Messenger:
-    def __init__(self, client: Client, session_name: str):
+    def __init__(self, client: Client, session_name: str, category_id: Optional[int] = None, parser=None):
         self.client = client
         self.session_name = session_name
+        self.category_id = category_id
+        self.parser = parser  # Парсер для определения категории по ключевым словам
         self.template = db.get_active_template()
         self.follow_up_timers = {}  # Таймеры дожимающих сообщений
 
@@ -124,7 +126,8 @@ class Messenger:
 
         # Пересылка всех сообщений в канал менеджеров
         print(f"[{self.session_name}] 📤 Пересылаем сообщение в канал менеджеров...")
-        await self.forward_message_to_managers(message, source_channel, original_post_text)
+        # Парсер передается для определения категории по ключевым словам
+        await self.forward_message_to_managers(message, source_channel, original_post_text, parser=self.parser)
         print(f"[{self.session_name}] ✅ Сообщение переслано в канал менеджеров")
 
         # Проверка на телефон
@@ -147,10 +150,43 @@ class Messenger:
         
         print(f"[{self.session_name}] ✅ process_incoming_message: обработка завершена")
 
-    async def forward_message_to_managers(self, message: Message, source_channel: str = "", original_post_text: str = ""):
+    async def forward_message_to_managers(self, message: Message, source_channel: str = "", original_post_text: str = "", parser=None):
         """Переслать сообщение от пользователя в канал менеджеров"""
-        # Сначала пробуем получить из БД, если нет - из config
-        channel_id = db.get_managers_channel_id() or config.MANAGERS_CHANNEL_ID
+        # Определяем категорию по каналу-источнику и ключевым словам
+        channel_id = None
+        source_category_id = None
+        
+        message_text = message.text or message.caption or ""
+        
+        # Пытаемся определить категорию по каналу-источнику
+        if source_channel:
+            source_categories = db.get_channel_categories_by_link(source_channel)
+            if source_categories:
+                # Если канал принадлежит нескольким категориям, определяем по ключевым словам
+                if len(source_categories) > 1 and parser:
+                    detected_category = parser.detect_category_by_keywords(message_text)
+                    if detected_category and detected_category in source_categories:
+                        source_category_id = detected_category
+                    else:
+                        # Используем первую категорию канала
+                        source_category_id = source_categories[0]
+                else:
+                    # Используем первую категорию канала
+                    source_category_id = source_categories[0]
+                
+                category = db.get_category(source_category_id)
+                if category and category.get('managers_channel_id'):
+                    channel_id = category['managers_channel_id']
+        
+        # Если не удалось определить по каналу-источнику, используем category_id из messenger'а
+        if not channel_id and self.category_id:
+            category = db.get_category(self.category_id)
+            if category and category.get('managers_channel_id'):
+                channel_id = category['managers_channel_id']
+        
+        # Если канал категории не настроен, используем глобальный
+        if not channel_id:
+            channel_id = db.get_managers_channel_id() or config.MANAGERS_CHANNEL_ID
         
         if not channel_id:
             print("MANAGERS_CHANNEL_ID not configured!")

@@ -297,22 +297,66 @@ class ManagersChannelStates(StatesGroup):
     waiting_for_channel_id = State()
 
 
+class CategoryStates(StatesGroup):
+    waiting_for_name = State()
+    waiting_for_session_name = State()
+    waiting_for_managers_channel_id = State()
+    waiting_for_channels = State()
+    waiting_for_keywords = State()
+    waiting_for_stopwords = State()
+
+
 # ========== ГЛАВНОЕ МЕНЮ ==========
 def get_main_menu() -> InlineKeyboardMarkup:
-    """Главное меню админ-панели"""
-    # Проверяем настроен ли канал менеджеров
-    managers_channel = db.get_managers_channel_id()
-    channel_status = "✅" if managers_channel else "❌"
+    """Главное меню админ-панели - список категорий"""
+    categories = db.get_all_categories()
+    
+    keyboard = []
+    
+    # Кнопка добавления категории
+    keyboard.append([InlineKeyboardButton(text="➕ Добавить категорию", callback_data="category_add")])
+    
+    # Список категорий
+    if categories:
+        for cat in categories:
+            keyboard.append([
+                InlineKeyboardButton(
+                    text=f"📁 {cat['name']}",
+                    callback_data=f"category_menu_{cat['id']}"
+                )
+            ])
+    
+    # Дополнительные разделы
+    keyboard.append([InlineKeyboardButton(text="👥 Аккаунты", callback_data="admin_accounts")])
+    keyboard.append([InlineKeyboardButton(text="📊 Статистика", callback_data="admin_stats")])
+    
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+
+def get_category_menu(category_id: int) -> InlineKeyboardMarkup:
+    """Меню категории с настройками"""
+    category = db.get_category(category_id)
+    if not category:
+        return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Назад", callback_data="admin_back")]])
+    
+    # Проверяем настройки категории
+    userbots = db.get_category_userbots(category_id)
+    has_userbot = len(userbots) > 0
+    has_channel = bool(category.get('managers_channel_id'))
+    groups = db.get_private_groups_by_category(category_id)
+    keywords = db.get_category_keywords(category_id)
+    stopwords = db.get_category_stopwords(category_id)
     
     keyboard = [
-        [InlineKeyboardButton(text="📊 Статистика", callback_data="admin_stats")],
-        [InlineKeyboardButton(text="🔒 Приватные группы", callback_data="admin_private_groups")],
-        [InlineKeyboardButton(text="🌐 Публичные группы", callback_data="admin_public_groups")],
-        [InlineKeyboardButton(text="🔑 Ключевые слова", callback_data="admin_keywords")],
-        [InlineKeyboardButton(text="🛑 Стоп-слова", callback_data="admin_stopwords")],
-        [InlineKeyboardButton(text="💬 Шаблоны сообщений", callback_data="admin_templates")],
-        [InlineKeyboardButton(text="👥 Аккаунты", callback_data="admin_accounts")],
-        [InlineKeyboardButton(text=f"{channel_status} Канал менеджеров", callback_data="admin_managers_channel")],
+        [InlineKeyboardButton(text="🔒 Приватные группы", callback_data=f"cat_private_groups_{category_id}")],
+        [InlineKeyboardButton(text="🌐 Публичные группы", callback_data=f"cat_public_groups_{category_id}")],
+        [InlineKeyboardButton(text=f"{'✅' if has_userbot else '❌'} Userbot'ы ({len(userbots)})", callback_data=f"cat_userbot_{category_id}")],
+        [InlineKeyboardButton(text=f"{'✅' if has_channel else '❌'} Канал менеджеров", callback_data=f"cat_managers_channel_{category_id}")],
+        [InlineKeyboardButton(text=f"🔑 Ключевые слова ({len(keywords)})", callback_data=f"cat_keywords_{category_id}")],
+        [InlineKeyboardButton(text=f"🛑 Стоп-слова ({len(stopwords)})", callback_data=f"cat_stopwords_{category_id}")],
+        [InlineKeyboardButton(text="✏️ Редактировать категорию", callback_data=f"category_edit_{category_id}")],
+        [InlineKeyboardButton(text="🗑 Удалить категорию", callback_data=f"category_delete_{category_id}")],
+        [InlineKeyboardButton(text="◀️ Назад", callback_data="admin_back")],
     ]
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
@@ -330,7 +374,16 @@ async def cmd_admin(message: Message):
     else:
         await message.answer("✅ Добро пожаловать в админ-панель!")
 
-    await message.answer("Выберите раздел:", reply_markup=get_main_menu())
+    categories = db.get_all_categories()
+    if not categories:
+        await message.answer(
+            "📁 <b>Категории</b>\n\n"
+            "У вас пока нет категорий. Создайте первую категорию для начала работы!",
+            reply_markup=get_main_menu(),
+            parse_mode="HTML"
+        )
+    else:
+        await message.answer("Выберите категорию для настройки:", reply_markup=get_main_menu())
 
 
 # ========== СТАТИСТИКА ==========
@@ -683,44 +736,68 @@ async def add_private_group_public_start(callback: CallbackQuery, state: FSMCont
 async def add_private_group_private_process(message: Message, state: FSMContext):
     """Сохранить приватный инвайт в БД"""
     invite_link = (message.text or "").strip()
+    data = await state.get_data()
+    category_id = data.get('category_id')
+    
     if not _is_private_invite_link(invite_link):
         await message.answer("❌ Формат не похож на приватный invite. Отправьте `https://t.me/+HASH` или `https://t.me/joinchat/HASH` или `+HASH`.")
         return
 
-    group_id = db.add_private_group(invite_link)
+    group_id = db.add_private_group(invite_link, category_id=category_id)
     if not group_id:
         await message.answer("❌ Не удалось добавить (возможно ошибка БД).")
         await state.clear()
-        await message.answer("Выберите раздел:", reply_markup=get_main_menu())
+        if category_id:
+            await message.answer("Выберите раздел:", reply_markup=get_category_menu(category_id))
+        else:
+            await message.answer("Выберите раздел:", reply_markup=get_main_menu())
         return
 
     await message.answer("✅ Добавлено.")
-    # Остаёмся в этом разделе: показываем список + две кнопки (Удалить/Назад)
-    await state.set_state(AddPrivateGroupStates.waiting_for_private_invite_link)
-    text, kb = _render_simple_add_groups_screen("private")
-    await message.answer(text, reply_markup=kb, parse_mode="HTML")
+    
+    if category_id:
+        # Если это добавление в категорию, возвращаемся в меню категории
+        await state.clear()
+        await message.answer("Выберите раздел:", reply_markup=get_category_menu(category_id))
+    else:
+        # Старое поведение для обратной совместимости
+        await state.set_state(AddPrivateGroupStates.waiting_for_private_invite_link)
+        text, kb = _render_simple_add_groups_screen("private")
+        await message.answer(text, reply_markup=kb, parse_mode="HTML")
 
 
 @router.message(AddPrivateGroupStates.waiting_for_public_link)
 async def add_private_group_public_process(message: Message, state: FSMContext):
     """Сохранить публичный username/линк в БД"""
     public_link = (message.text or "").strip()
+    data = await state.get_data()
+    category_id = data.get('category_id')
+    
     if not _is_public_target(public_link):
         await message.answer("❌ Формат не похож на публичный username/ссылку. Пример: `@username` или `https://t.me/username`.")
         return
 
-    group_id = db.add_private_group(public_link)
+    group_id = db.add_private_group(public_link, category_id=category_id)
     if not group_id:
         await message.answer("❌ Не удалось добавить (возможно ошибка БД).")
         await state.clear()
-        await message.answer("Выберите раздел:", reply_markup=get_main_menu())
+        if category_id:
+            await message.answer("Выберите раздел:", reply_markup=get_category_menu(category_id))
+        else:
+            await message.answer("Выберите раздел:", reply_markup=get_main_menu())
         return
 
     await message.answer("✅ Добавлено.")
-    # Остаёмся в этом разделе: показываем список + две кнопки (Удалить/Назад)
-    await state.set_state(AddPrivateGroupStates.waiting_for_public_link)
-    text, kb = _render_simple_add_groups_screen("public")
-    await message.answer(text, reply_markup=kb, parse_mode="HTML")
+    
+    if category_id:
+        # Если это добавление в категорию, возвращаемся в меню категории
+        await state.clear()
+        await message.answer("Выберите раздел:", reply_markup=get_category_menu(category_id))
+    else:
+        # Старое поведение для обратной совместимости
+        await state.set_state(AddPrivateGroupStates.waiting_for_public_link)
+        text, kb = _render_simple_add_groups_screen("public")
+        await message.answer(text, reply_markup=kb, parse_mode="HTML")
 
 
 @router.callback_query(F.data.startswith("private_group_reactivate_"))
@@ -1246,22 +1323,46 @@ async def add_account_session_file(message: Message, state: FSMContext):
             # Сохраняем в БД (без API credentials, они уже в сессии)
             db.add_account(session_name, phone, "", "", "Active")
             
-            await message.answer(
-                f"✅ Сессия успешно загружена!\n\n"
-                f"Session: <b>{session_name}</b>\n"
-                f"Username: @{me.username or 'N/A'}\n"
-                f"Phone: {phone}\n\n"
-                f"💡 <b>Важно:</b> API credentials уже сохранены в файле сессии.\n"
-                f"Аккаунт готов к работе!",
-                parse_mode="HTML"
-            )
-            
-            # Перезагружаем аккаунт в менеджере
-            if userbot_manager:
-                await userbot_manager.add_client(session_name, phone)
-            
-            await state.clear()
-            await message.answer("Выберите раздел:", reply_markup=get_main_menu())
+            # Проверяем есть ли category_id в state (добавление для категории)
+            data = await state.get_data()
+            category_id = data.get('category_id')
+            if category_id:
+                # Автоматически добавляем аккаунт в категорию через таблицу связи
+                db.add_category_userbot(category_id, session_name)
+                if userbot_manager:
+                    await userbot_manager.add_client(session_name, phone)
+                    await userbot_manager.update_category_for_session(session_name)
+                
+                category = db.get_category(category_id)
+                await message.answer(
+                    f"✅ Сессия успешно загружена и назначена категории '{category['name']}'!\n\n"
+                    f"Session: <b>{session_name}</b>\n"
+                    f"Username: @{me.username or 'N/A'}\n"
+                    f"Phone: {phone}\n\n"
+                    f"💡 <b>Важно:</b> API credentials уже сохранены в файле сессии.\n"
+                    f"Аккаунт готов к работе!",
+                    parse_mode="HTML"
+                )
+                await state.clear()
+                await message.answer("Выберите раздел:", reply_markup=get_category_menu(category_id))
+            else:
+                # Обычное добавление (не для категории)
+                await message.answer(
+                    f"✅ Сессия успешно загружена!\n\n"
+                    f"Session: <b>{session_name}</b>\n"
+                    f"Username: @{me.username or 'N/A'}\n"
+                    f"Phone: {phone}\n\n"
+                    f"💡 <b>Важно:</b> API credentials уже сохранены в файле сессии.\n"
+                    f"Аккаунт готов к работе!",
+                    parse_mode="HTML"
+                )
+                
+                # Перезагружаем аккаунт в менеджере
+                if userbot_manager:
+                    await userbot_manager.add_client(session_name, phone)
+                
+                await state.clear()
+                await message.answer("Выберите раздел:", reply_markup=get_main_menu())
             
         except Exception as e:
             # Если не получилось подключиться, возможно нужны API credentials
@@ -1378,21 +1479,39 @@ async def add_account_code(message: Message, state: FSMContext):
             # Сохраняем в БД
             db.add_account(final_session_name, phone, str(api_id), api_hash, "Active")
 
-            # Сохраняем API credentials в переменные окружения (в реальности лучше в БД или конфиг)
-            # Для простоты используем формат API_ID_{session_name}
-            await message.answer(
-                f"✅ Аккаунт добавлен!\n"
-                f"Session: {final_session_name}\n"
-                f"Username: @{me.username or 'N/A'}\n"
-                f"API credentials сохранены в БД"
-            )
+            # Проверяем есть ли category_id в state (добавление для категории)
+            category_id = data.get('category_id')
+            if category_id:
+                # Автоматически добавляем аккаунт в категорию через таблицу связи
+                db.add_category_userbot(category_id, final_session_name)
+                if userbot_manager:
+                    await userbot_manager.add_client(final_session_name, phone)
+                    await userbot_manager.update_category_for_session(final_session_name)
+                
+                category = db.get_category(category_id)
+                await message.answer(
+                    f"✅ Аккаунт добавлен и назначен категории '{category['name']}'!\n"
+                    f"Session: {final_session_name}\n"
+                    f"Username: @{me.username or 'N/A'}\n"
+                    f"API credentials сохранены в БД"
+                )
+                await state.clear()
+                await message.answer("Выберите раздел:", reply_markup=get_category_menu(category_id))
+            else:
+                # Обычное добавление (не для категории)
+                await message.answer(
+                    f"✅ Аккаунт добавлен!\n"
+                    f"Session: {final_session_name}\n"
+                    f"Username: @{me.username or 'N/A'}\n"
+                    f"API credentials сохранены в БД"
+                )
 
-            # Перезагружаем аккаунт в менеджере
-            if userbot_manager:
-                await userbot_manager.add_client(final_session_name, phone)
+                # Перезагружаем аккаунт в менеджере
+                if userbot_manager:
+                    await userbot_manager.add_client(final_session_name, phone)
 
-            await state.clear()
-            await message.answer("Выберите раздел:", reply_markup=get_main_menu())
+                await state.clear()
+                await message.answer("Выберите раздел:", reply_markup=get_main_menu())
 
         except SessionPasswordNeeded:
             await state.set_state(AddAccountStates.waiting_for_password)
@@ -1440,19 +1559,39 @@ async def add_account_password(message: Message, state: FSMContext):
         # Сохраняем в БД
         db.add_account(final_session_name, phone, str(api_id), api_hash, "Active")
 
-        await message.answer(
-            f"✅ Аккаунт добавлен!\n"
-            f"Session: {final_session_name}\n"
-            f"Username: @{me.username or 'N/A'}\n"
-            f"API credentials сохранены в БД"
-        )
+        # Проверяем есть ли category_id в state (добавление для категории)
+        category_id = data.get('category_id')
+        if category_id:
+            # Автоматически добавляем аккаунт в категорию через таблицу связи
+            db.add_category_userbot(category_id, final_session_name)
+            if userbot_manager:
+                await userbot_manager.add_client(final_session_name, phone)
+                await userbot_manager.update_category_for_session(final_session_name)
+            
+            category = db.get_category(category_id)
+            await message.answer(
+                f"✅ Аккаунт добавлен и назначен категории '{category['name']}'!\n"
+                f"Session: {final_session_name}\n"
+                f"Username: @{me.username or 'N/A'}\n"
+                f"API credentials сохранены в БД"
+            )
+            await state.clear()
+            await message.answer("Выберите раздел:", reply_markup=get_category_menu(category_id))
+        else:
+            # Обычное добавление (не для категории)
+            await message.answer(
+                f"✅ Аккаунт добавлен!\n"
+                f"Session: {final_session_name}\n"
+                f"Username: @{me.username or 'N/A'}\n"
+                f"API credentials сохранены в БД"
+            )
 
-        # Перезагружаем аккаунт в менеджере
-        if userbot_manager:
-            await userbot_manager.add_client(final_session_name, phone)
+            # Перезагружаем аккаунт в менеджере
+            if userbot_manager:
+                await userbot_manager.add_client(final_session_name, phone)
 
-        await state.clear()
-        await message.answer("Выберите раздел:", reply_markup=get_main_menu())
+            await state.clear()
+            await message.answer("Выберите раздел:", reply_markup=get_main_menu())
 
     except Exception as e:
         await message.answer(f"❌ Ошибка: {e}")
@@ -1580,6 +1719,9 @@ async def set_managers_channel_start(callback: CallbackQuery, state: FSMContext)
 @router.message(ManagersChannelStates.waiting_for_channel_id)
 async def set_managers_channel_process(message: Message, state: FSMContext):
     """Обработать ID канала"""
+    data = await state.get_data()
+    category_id = data.get('category_id')
+    
     try:
         channel_id = int(message.text.strip())
         
@@ -1588,27 +1730,45 @@ async def set_managers_channel_process(message: Message, state: FSMContext):
             await message.answer("⚠️ ID канала обычно отрицательное число (начинается с -100). Попробуйте еще раз или отправьте ❌ Отмена.")
             return
         
-        # Сохраняем в БД
-        success = db.set_managers_channel_id(channel_id)
-        
-        if success:
-            await message.answer(f"✅ Канал менеджеров установлен: <code>{channel_id}</code>", parse_mode="HTML")
-            await state.clear()
+        if category_id:
+            # Сохраняем канал для категории
+            success = db.update_category(category_id, {'managers_channel_id': channel_id})
             
-            # Показываем обновленные настройки
-            text = f"""📢 <b>Канал менеджеров</b>
+            if success:
+                category = db.get_category(category_id)
+                await message.answer(f"✅ Канал менеджеров установлен для категории '{category['name']}': <code>{channel_id}</code>", parse_mode="HTML")
+                await state.clear()
+                await message.answer(
+                    f"📢 <b>Канал менеджеров: {category['name']}</b>\n\n"
+                    f"Текущий канал: <code>{channel_id}</code>\n\n"
+                    f"Сообщения от пользователей будут пересылаться в этот канал.",
+                    reply_markup=get_category_menu(category_id),
+                    parse_mode="HTML"
+                )
+            else:
+                await message.answer("❌ Ошибка при сохранении канала. Попробуйте еще раз.")
+        else:
+            # Сохраняем глобальный канал менеджеров
+            success = db.set_managers_channel_id(channel_id)
+            
+            if success:
+                await message.answer(f"✅ Канал менеджеров установлен: <code>{channel_id}</code>", parse_mode="HTML")
+                await state.clear()
+                
+                # Показываем обновленные настройки
+                text = f"""📢 <b>Канал менеджеров</b>
 
 Текущий канал: <code>{channel_id}</code>
 
 Сообщения от пользователей будут пересылаться в этот канал."""
-            keyboard = [
-                [InlineKeyboardButton(text="✏️ Изменить", callback_data="managers_channel_set")],
-                [InlineKeyboardButton(text="🗑 Удалить", callback_data="managers_channel_delete")],
-                [InlineKeyboardButton(text="◀️ Назад", callback_data="admin_back")],
-            ]
-            await message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard), parse_mode="HTML")
-        else:
-            await message.answer("❌ Ошибка при сохранении канала. Попробуйте еще раз.")
+                keyboard = [
+                    [InlineKeyboardButton(text="✏️ Изменить", callback_data="managers_channel_set")],
+                    [InlineKeyboardButton(text="🗑 Удалить", callback_data="managers_channel_delete")],
+                    [InlineKeyboardButton(text="◀️ Назад", callback_data="admin_back")],
+                ]
+                await message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard), parse_mode="HTML")
+            else:
+                await message.answer("❌ Ошибка при сохранении канала. Попробуйте еще раз.")
     except ValueError:
         await message.answer("⚠️ Неверный формат. Отправьте число (ID канала).")
     except Exception as e:
@@ -1634,6 +1794,914 @@ async def delete_managers_channel(callback: CallbackQuery):
         await _safe_edit_text(callback, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard), parse_mode="HTML")
     else:
         await _safe_callback_answer(callback, "❌ Ошибка при удалении", show_alert=True)
+
+
+# ========== КАТЕГОРИИ ==========
+@router.callback_query(F.data.startswith("category_menu_"))
+async def show_category_menu(callback: CallbackQuery):
+    """Показать меню категории"""
+    try:
+        category_id = int(callback.data.split("_")[-1])
+    except Exception:
+        await _safe_callback_answer(callback, "Некорректный ID", show_alert=True)
+        return
+    
+    category = db.get_category(category_id)
+    if not category:
+        await _safe_callback_answer(callback, "Категория не найдена", show_alert=True)
+        return
+    
+    userbots = db.get_category_userbots(category_id)
+    groups = db.get_private_groups_by_category(category_id)
+    keywords = db.get_category_keywords(category_id)
+    stopwords = db.get_category_stopwords(category_id)
+    
+    text = f"📁 <b>{category['name']}</b>\n\n"
+    text += f"ID: <code>{category_id}</code>\n"
+    text += f"Userbot'ы: {', '.join(userbots) if userbots else 'Не назначены'}\n"
+    text += f"Канал менеджеров: <code>{category.get('managers_channel_id') or 'Не настроен'}</code>\n\n"
+    text += f"📊 Статистика:\n"
+    text += f"• Групп: {len(groups)}\n"
+    text += f"• Ключевых слов: {len(keywords)}\n"
+    text += f"• Стоп-слов: {len(stopwords)}\n"
+    
+    await _safe_callback_answer(callback)
+    await _safe_edit_text(callback, text, reply_markup=get_category_menu(category_id), parse_mode="HTML")
+
+
+@router.callback_query(F.data == "admin_categories")
+async def show_categories(callback: CallbackQuery):
+    """Показать список категорий"""
+    categories = db.get_all_categories()
+    active_category = db.get_active_category()
+    active_category_id = active_category.get('id') if active_category else None
+    
+    text = f"📁 <b>Категории</b>\n\n"
+    if not categories:
+        text += "Нет категорий. Создайте первую категорию!"
+    else:
+        for cat in categories:
+            is_active = "✅" if cat['id'] == active_category_id else "⚪"
+            userbots = db.get_category_userbots(cat['id'])
+            userbots_str = ", ".join(userbots) if userbots else "Не назначены"
+            channel_id = cat.get('managers_channel_id') or "Не настроен"
+            text += f"{is_active} <b>{cat['name']}</b>\n"
+            text += f"  • ID: <code>{cat['id']}</code>\n"
+            text += f"  • Userbot'ы ({len(userbots)}): {userbots_str}\n"
+            text += f"  • Канал менеджеров: <code>{channel_id}</code>\n\n"
+    
+    keyboard = [
+        [InlineKeyboardButton(text="➕ Создать категорию", callback_data="category_add")],
+    ]
+    
+    if categories:
+        for cat in categories:
+            keyboard.append([
+                InlineKeyboardButton(
+                    text=f"{'✅' if cat['id'] == active_category_id else '⚪'} {cat['name']}",
+                    callback_data=f"category_view_{cat['id']}"
+                )
+            ])
+    
+    keyboard.append([InlineKeyboardButton(text="◀️ Назад", callback_data="admin_back")])
+    await _safe_callback_answer(callback)
+    await _safe_edit_text(callback, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard), parse_mode="HTML")
+
+
+@router.callback_query(F.data == "category_add")
+async def add_category_start(callback: CallbackQuery, state: FSMContext):
+    """Начать создание категории"""
+    await state.set_state(CategoryStates.waiting_for_name)
+    await _safe_callback_answer(callback)
+    await _safe_edit_text(
+        callback,
+        "📁 <b>Создание категории</b>\n\nОтправьте название категории:",
+        parse_mode="HTML"
+    )
+
+
+@router.message(CategoryStates.waiting_for_name)
+async def add_category_name(message: Message, state: FSMContext):
+    """Получить название категории"""
+    name = message.text.strip()
+    if not name:
+        await message.answer("❌ Название не может быть пустым. Попробуйте снова:")
+        return
+    
+    # Проверяем уникальность
+    categories = db.get_all_categories()
+    if any(cat['name'].lower() == name.lower() for cat in categories):
+        await message.answer("❌ Категория с таким названием уже существует. Попробуйте другое название:")
+        return
+    
+    category_id = db.add_category(name)
+    if not category_id:
+        await message.answer("❌ Ошибка при создании категории.")
+        await state.clear()
+        await message.answer("Выберите раздел:", reply_markup=get_main_menu())
+        return
+    
+    await state.update_data(category_id=category_id)
+    await state.set_state(CategoryStates.waiting_for_session_name)
+    
+    # Показываем список аккаунтов
+    accounts = db.get_all_accounts()
+    if not accounts:
+        await message.answer(
+            "✅ Категория создана!\n\n"
+            "⚠️ Нет доступных аккаунтов. Добавьте аккаунты в разделе '👥 Аккаунты'.\n\n"
+            "Отправьте имя сессии (session_name) для этой категории или отправьте 'пропустить' для пропуска:"
+        )
+    else:
+        text = "✅ Категория создана!\n\nВыберите userbot для этой категории:\n\n"
+        for acc in accounts:
+            text += f"• <code>{acc['session_name']}</code> ({acc['phone']}) - {acc['status']}\n"
+        text += "\nОтправьте имя сессии (session_name) или 'пропустить' для пропуска:"
+        await message.answer(text, parse_mode="HTML")
+
+
+@router.message(CategoryStates.waiting_for_session_name)
+async def add_category_session(message: Message, state: FSMContext):
+    """Получить session_name для категории (старый обработчик - теперь пропускаем)"""
+    session_name = message.text.strip()
+    data = await state.get_data()
+    category_id = data.get('category_id')
+    
+    if not category_id:
+        await message.answer("❌ Ошибка: категория не найдена.")
+        await state.clear()
+        return
+    
+    # Пропускаем назначение userbot'а при создании - можно добавить позже
+    await state.set_state(CategoryStates.waiting_for_managers_channel_id)
+    
+    await message.answer(
+        "✅ Категория создана!\n\n"
+        "💡 <b>Совет:</b> Userbot'ы можно добавить позже в настройках категории.\n\n"
+        "Отправьте ID канала менеджеров (куда будут пересылаться ответы от пользователей) "
+        "или 'пропустить' для пропуска:"
+    )
+
+
+@router.message(CategoryStates.waiting_for_managers_channel_id)
+async def add_category_channel(message: Message, state: FSMContext):
+    """Получить ID канала менеджеров для категории"""
+    channel_text = message.text.strip()
+    data = await state.get_data()
+    category_id = data.get('category_id')
+    
+    if not category_id:
+        await message.answer("❌ Ошибка: категория не найдена.")
+        await state.clear()
+        return
+    
+    if channel_text.lower() in ['пропустить', 'skip', '']:
+        channel_id = None
+    else:
+        try:
+            channel_id = int(channel_text)
+        except ValueError:
+            await message.answer("❌ ID канала должен быть числом. Попробуйте снова или отправьте 'пропустить':")
+            return
+    
+    db.update_category(category_id, {'managers_channel_id': channel_id})
+    await state.clear()
+    
+    category = db.get_category(category_id)
+    await message.answer(
+        f"✅ Категория '{category['name']}' создана!\n\n"
+        f"Теперь вы можете настроить категорию:",
+        reply_markup=get_category_menu(category_id),
+        parse_mode="HTML"
+    )
+
+
+@router.callback_query(F.data.startswith("category_edit_"))
+async def edit_category(callback: CallbackQuery, state: FSMContext):
+    """Начать редактирование категории"""
+    try:
+        category_id = int(callback.data.split("_")[-1])
+    except Exception:
+        await _safe_callback_answer(callback, "Некорректный ID", show_alert=True)
+        return
+    
+    category = db.get_category(category_id)
+    if not category:
+        await _safe_callback_answer(callback, "Категория не найдена", show_alert=True)
+        return
+    
+    await state.update_data(category_id=category_id, edit_mode=True)
+    
+    text = f"✏️ <b>Редактирование категории: {category['name']}</b>\n\n"
+    text += "Выберите что изменить:\n\n"
+    text += "1. Название категории\n"
+    text += "2. Userbot\n"
+    text += "3. Канал менеджеров"
+    
+    keyboard = [
+        [InlineKeyboardButton(text="📝 Название", callback_data=f"category_edit_name_{category_id}")],
+        [InlineKeyboardButton(text="👤 Userbot", callback_data=f"category_edit_session_{category_id}")],
+        [InlineKeyboardButton(text="📢 Канал менеджеров", callback_data=f"category_edit_channel_{category_id}")],
+        [InlineKeyboardButton(text="◀️ Назад", callback_data=f"category_view_{category_id}")]
+    ]
+    
+    await _safe_callback_answer(callback)
+    await _safe_edit_text(callback, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard), parse_mode="HTML")
+
+
+class EditCategoryStates(StatesGroup):
+    waiting_for_name = State()
+    waiting_for_session_name = State()
+    waiting_for_channel_id = State()
+
+
+@router.callback_query(F.data.startswith("category_edit_name_"))
+async def edit_category_name_start(callback: CallbackQuery, state: FSMContext):
+    """Начать редактирование названия категории"""
+    try:
+        category_id = int(callback.data.split("_")[-1])
+    except Exception:
+        await _safe_callback_answer(callback, "Некорректный ID", show_alert=True)
+        return
+    
+    category = db.get_category(category_id)
+    if not category:
+        await _safe_callback_answer(callback, "Категория не найдена", show_alert=True)
+        return
+    
+    await state.set_state(EditCategoryStates.waiting_for_name)
+    await state.update_data(category_id=category_id)
+    
+    await _safe_callback_answer(callback)
+    await _safe_edit_text(
+        callback,
+        f"✏️ <b>Редактирование названия</b>\n\nТекущее название: <b>{category['name']}</b>\n\nОтправьте новое название:",
+        parse_mode="HTML"
+    )
+
+
+@router.message(EditCategoryStates.waiting_for_name)
+async def edit_category_name_process(message: Message, state: FSMContext):
+    """Обработать новое название категории"""
+    name = message.text.strip()
+    data = await state.get_data()
+    category_id = data.get('category_id')
+    
+    if not name:
+        await message.answer("❌ Название не может быть пустым. Попробуйте снова:")
+        return
+    
+    # Проверяем уникальность
+    categories = db.get_all_categories()
+    if any(cat['id'] != category_id and cat['name'].lower() == name.lower() for cat in categories):
+        await message.answer("❌ Категория с таким названием уже существует. Попробуйте другое название:")
+        return
+    
+    success = db.update_category(category_id, {'name': name})
+    if success:
+        await message.answer("✅ Название обновлено!")
+    else:
+        await message.answer("❌ Ошибка при обновлении названия.")
+    
+    await state.clear()
+    await message.answer("Выберите раздел:", reply_markup=get_main_menu())
+
+
+@router.callback_query(F.data.startswith("category_edit_session_"))
+async def edit_category_session_start(callback: CallbackQuery, state: FSMContext):
+    """Начать редактирование userbot'а категории"""
+    try:
+        category_id = int(callback.data.split("_")[-1])
+    except Exception:
+        await _safe_callback_answer(callback, "Некорректный ID", show_alert=True)
+        return
+    
+    category = db.get_category(category_id)
+    if not category:
+        await _safe_callback_answer(callback, "Категория не найдена", show_alert=True)
+        return
+    
+    await state.set_state(EditCategoryStates.waiting_for_session_name)
+    await state.update_data(category_id=category_id)
+    
+    category_userbots = db.get_category_userbots(category_id)
+    accounts = db.get_all_accounts()
+    text = f"✏️ <b>Редактирование userbot'ов</b>\n\n"
+    text += f"Текущие userbot'ы ({len(category_userbots)}):\n"
+    if category_userbots:
+        for session_name in category_userbots:
+            account = db.get_account(session_name)
+            if account:
+                text += f"• <code>{session_name}</code> ({account['phone']}) - {account['status']}\n"
+            else:
+                text += f"• <code>{session_name}</code>\n"
+    else:
+        text += "Не назначены\n"
+    
+    text += "\n💡 <b>Совет:</b> Используйте меню категории для управления userbot'ами.\n"
+    text += "Там можно добавлять и удалять userbot'ы."
+    
+    keyboard = [
+        [InlineKeyboardButton(text="◀️ Назад", callback_data=f"category_edit_{category_id}")]
+    ]
+    
+    await _safe_callback_answer(callback)
+    await _safe_edit_text(callback, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard), parse_mode="HTML")
+
+
+@router.callback_query(F.data.startswith("category_edit_channel_"))
+async def edit_category_channel_start(callback: CallbackQuery, state: FSMContext):
+    """Начать редактирование канала менеджеров категории"""
+    try:
+        category_id = int(callback.data.split("_")[-1])
+    except Exception:
+        await _safe_callback_answer(callback, "Некорректный ID", show_alert=True)
+        return
+    
+    category = db.get_category(category_id)
+    if not category:
+        await _safe_callback_answer(callback, "Категория не найдена", show_alert=True)
+        return
+    
+    await state.set_state(EditCategoryStates.waiting_for_channel_id)
+    await state.update_data(category_id=category_id)
+    
+    text = f"✏️ <b>Редактирование канала менеджеров</b>\n\n"
+    text += f"Текущий канал: <code>{category.get('managers_channel_id') or 'Не настроен'}</code>\n\n"
+    text += "Отправьте ID канала менеджеров или 'пропустить' для удаления:"
+    
+    await _safe_callback_answer(callback)
+    await _safe_edit_text(callback, text, parse_mode="HTML")
+
+
+@router.message(EditCategoryStates.waiting_for_channel_id)
+async def edit_category_channel_process(message: Message, state: FSMContext):
+    """Обработать новый канал менеджеров категории"""
+    channel_text = message.text.strip()
+    data = await state.get_data()
+    category_id = data.get('category_id')
+    
+    if channel_text.lower() in ['пропустить', 'skip', '']:
+        channel_id = None
+    else:
+        try:
+            channel_id = int(channel_text)
+        except ValueError:
+            await message.answer("❌ ID канала должен быть числом. Попробуйте снова или отправьте 'пропустить':")
+            return
+    
+    success = db.update_category(category_id, {'managers_channel_id': channel_id})
+    if success:
+        await message.answer("✅ Канал менеджеров обновлен!")
+    else:
+        await message.answer("❌ Ошибка при обновлении канала менеджеров.")
+    
+    await state.clear()
+    await message.answer("Выберите раздел:", reply_markup=get_main_menu())
+
+
+@router.callback_query(F.data.startswith("category_view_"))
+async def view_category(callback: CallbackQuery):
+    """Просмотр деталей категории"""
+    try:
+        category_id = int(callback.data.split("_")[-1])
+    except Exception:
+        await _safe_callback_answer(callback, "Некорректный ID", show_alert=True)
+        return
+    
+    category = db.get_category(category_id)
+    if not category:
+        await _safe_callback_answer(callback, "Категория не найдена", show_alert=True)
+        return
+    
+    active_category = db.get_active_category()
+    is_active = active_category and active_category.get('id') == category_id
+    
+    channels = db.get_category_channels(category_id)
+    keywords = db.get_category_keywords(category_id)
+    stopwords = db.get_category_stopwords(category_id)
+    
+    text = f"📁 <b>{category['name']}</b>\n\n"
+    text += f"ID: <code>{category_id}</code>\n"
+    text += f"Статус: {'✅ Активна' if is_active else '⚪ Неактивна'}\n"
+    userbots = db.get_category_userbots(category_id)
+    userbots_str = ", ".join(userbots) if userbots else "Не назначены"
+    text += f"Userbot'ы ({len(userbots)}): {userbots_str}\n"
+    text += f"Канал менеджеров: <code>{category.get('managers_channel_id') or 'Не настроен'}</code>\n\n"
+    text += f"Каналов: {len(channels)}\n"
+    text += f"Ключевых слов: {len(keywords)}\n"
+    text += f"Стоп-слов: {len(stopwords)}\n"
+    
+    keyboard = [
+        [InlineKeyboardButton(text="✏️ Редактировать", callback_data=f"category_edit_{category_id}")],
+        [InlineKeyboardButton(text="📢 Каналы", callback_data=f"category_channels_{category_id}")],
+        [InlineKeyboardButton(text="🔑 Ключевые слова", callback_data=f"category_keywords_{category_id}")],
+        [InlineKeyboardButton(text="🛑 Стоп-слова", callback_data=f"category_stopwords_{category_id}")],
+    ]
+    
+    if not is_active:
+        keyboard.append([InlineKeyboardButton(text="✅ Активировать", callback_data=f"category_activate_{category_id}")])
+    else:
+        keyboard.append([InlineKeyboardButton(text="⚪ Деактивировать", callback_data=f"category_deactivate")])
+    
+    keyboard.append([InlineKeyboardButton(text="🗑 Удалить", callback_data=f"category_delete_{category_id}")])
+    keyboard.append([InlineKeyboardButton(text="◀️ Назад", callback_data="admin_categories")])
+    
+    await _safe_callback_answer(callback)
+    await _safe_edit_text(callback, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard), parse_mode="HTML")
+
+
+@router.callback_query(F.data.startswith("category_activate_"))
+async def activate_category(callback: CallbackQuery):
+    """Активировать категорию"""
+    try:
+        category_id = int(callback.data.split("_")[-1])
+    except Exception:
+        await _safe_callback_answer(callback, "Некорректный ID", show_alert=True)
+        return
+    
+    category = db.get_category(category_id)
+    if not category:
+        await _safe_callback_answer(callback, "Категория не найдена", show_alert=True)
+        return
+    
+    db.set_active_category(category_id)
+    
+    # Обновляем category_id для всех сессий
+    if userbot_manager:
+        # Обновляем все сессии, чтобы применить новую активную категорию
+        for session_name in list(userbot_manager.clients.keys()):
+            await userbot_manager.update_category_for_session(session_name)
+    
+    await _safe_callback_answer(callback, "✅ Категория активирована!", show_alert=True)
+    await view_category(callback)
+
+
+@router.callback_query(F.data == "category_deactivate")
+async def deactivate_category(callback: CallbackQuery):
+    """Деактивировать категорию"""
+    db.set_active_category(None)
+    
+    # Обновляем все сессии, чтобы убрать category_id
+    if userbot_manager:
+        for session_name in list(userbot_manager.clients.keys()):
+            await userbot_manager.update_category_for_session(session_name)
+    
+    await _safe_callback_answer(callback, "✅ Категория деактивирована!", show_alert=True)
+    await show_categories(callback)
+
+
+@router.callback_query(F.data.startswith("category_delete_"))
+async def delete_category_confirm(callback: CallbackQuery):
+    """Подтверждение удаления категории"""
+    try:
+        category_id = int(callback.data.split("_")[-1])
+    except Exception:
+        await _safe_callback_answer(callback, "Некорректный ID", show_alert=True)
+        return
+    
+    category = db.get_category(category_id)
+    if not category:
+        await _safe_callback_answer(callback, "Категория не найдена", show_alert=True)
+        return
+    
+    text = f"⚠️ <b>Подтвердите удаление</b>\n\n"
+    text += f"Категория: <b>{category['name']}</b>\n\n"
+    text += "Все связи с каналами, ключевыми словами и стоп-словами будут удалены.\n\n"
+    text += "Это действие нельзя отменить!"
+    
+    keyboard = [
+        [
+            InlineKeyboardButton(text="✅ Да, удалить", callback_data=f"category_delete_confirm_{category_id}"),
+            InlineKeyboardButton(text="❌ Отмена", callback_data=f"category_view_{category_id}")
+        ],
+        [InlineKeyboardButton(text="◀️ Назад", callback_data="admin_categories")]
+    ]
+    
+    await _safe_callback_answer(callback)
+    await _safe_edit_text(callback, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard), parse_mode="HTML")
+
+
+@router.callback_query(F.data.startswith("category_delete_confirm_"))
+async def delete_category_execute(callback: CallbackQuery):
+    """Удалить категорию"""
+    try:
+        category_id = int(callback.data.split("_")[-1])
+    except Exception:
+        await _safe_callback_answer(callback, "Некорректный ID", show_alert=True)
+        return
+    
+    # Проверяем активна ли категория
+    active_category = db.get_active_category()
+    if active_category and active_category.get('id') == category_id:
+        db.set_active_category(None)
+    
+    success = db.delete_category(category_id)
+    if success:
+        await _safe_callback_answer(callback, "✅ Категория удалена", show_alert=True)
+    else:
+        await _safe_callback_answer(callback, "❌ Ошибка при удалении", show_alert=True)
+    
+    await show_categories(callback)
+
+
+@router.callback_query(F.data.startswith("category_channels_"))
+async def manage_category_channels(callback: CallbackQuery):
+    """Управление каналами категории"""
+    try:
+        category_id = int(callback.data.split("_")[-1])
+    except Exception:
+        await _safe_callback_answer(callback, "Некорректный ID", show_alert=True)
+        return
+    
+    category = db.get_category(category_id)
+    if not category:
+        await _safe_callback_answer(callback, "Категория не найдена", show_alert=True)
+        return
+    
+    category_channels = db.get_category_channels(category_id)
+    all_channels = db.get_all_channels()
+    
+    text = f"📢 <b>Каналы категории: {category['name']}</b>\n\n"
+    text += f"Добавлено: {len(category_channels)}\n\n"
+    
+    if category_channels:
+        text += "<b>Текущие каналы:</b>\n"
+        for ch in category_channels[:10]:
+            text += f"• {ch.get('title') or ch['link']}\n"
+    
+    keyboard = []
+    
+    # Кнопки для добавления каналов
+    for ch in all_channels:
+        is_added = any(cc['id'] == ch['id'] for cc in category_channels)
+        if not is_added:
+            keyboard.append([
+                InlineKeyboardButton(
+                    text=f"➕ {ch.get('title') or ch['link'][:30]}",
+                    callback_data=f"category_channel_add_{category_id}_{ch['id']}"
+                )
+            ])
+    
+    # Кнопки для удаления каналов
+    if category_channels:
+        keyboard.append([InlineKeyboardButton(text="🗑 Удалить канал", callback_data=f"category_channel_remove_{category_id}")])
+    
+    keyboard.append([InlineKeyboardButton(text="◀️ Назад", callback_data=f"category_view_{category_id}")])
+    
+    await _safe_callback_answer(callback)
+    await _safe_edit_text(callback, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard), parse_mode="HTML")
+
+
+@router.callback_query(F.data.startswith("category_channel_add_"))
+async def add_channel_to_category(callback: CallbackQuery):
+    """Добавить канал в категорию"""
+    try:
+        parts = callback.data.split("_")
+        category_id = int(parts[3])
+        channel_id = int(parts[4])
+    except Exception:
+        await _safe_callback_answer(callback, "Некорректные параметры", show_alert=True)
+        return
+    
+    success = db.add_category_channel(category_id, channel_id)
+    if success:
+        await _safe_callback_answer(callback, "✅ Канал добавлен", show_alert=True)
+    else:
+        await _safe_callback_answer(callback, "❌ Ошибка", show_alert=True)
+    
+    await manage_category_channels(callback)
+
+
+@router.callback_query(F.data.startswith("category_channel_remove_"))
+async def remove_channel_from_category(callback: CallbackQuery):
+    """Удалить канал из категории"""
+    try:
+        category_id = int(callback.data.split("_")[-1])
+    except Exception:
+        await _safe_callback_answer(callback, "Некорректный ID", show_alert=True)
+        return
+    
+    category_channels = db.get_category_channels(category_id)
+    if not category_channels:
+        await _safe_callback_answer(callback, "Нет каналов для удаления", show_alert=True)
+        return
+    
+    keyboard = []
+    for ch in category_channels[:20]:
+        keyboard.append([
+            InlineKeyboardButton(
+                text=f"🗑 {ch.get('title') or ch['link'][:30]}",
+                callback_data=f"category_channel_remove_exec_{category_id}_{ch['id']}"
+            )
+        ])
+    
+    keyboard.append([InlineKeyboardButton(text="◀️ Назад", callback_data=f"category_channels_{category_id}")])
+    
+    await _safe_callback_answer(callback)
+    await _safe_edit_text(
+        callback,
+        "🗑 <b>Удаление канала</b>\n\nВыберите канал для удаления:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard),
+        parse_mode="HTML"
+    )
+
+
+@router.callback_query(F.data.startswith("category_channel_remove_exec_"))
+async def remove_channel_from_category_execute(callback: CallbackQuery):
+    """Выполнить удаление канала из категории"""
+    try:
+        parts = callback.data.split("_")
+        category_id = int(parts[4])
+        channel_id = int(parts[5])
+    except Exception:
+        await _safe_callback_answer(callback, "Некорректные параметры", show_alert=True)
+        return
+    
+    success = db.remove_category_channel(category_id, channel_id)
+    if success:
+        await _safe_callback_answer(callback, "✅ Канал удален", show_alert=True)
+    else:
+        await _safe_callback_answer(callback, "❌ Ошибка", show_alert=True)
+    
+    await manage_category_channels(callback)
+
+
+@router.callback_query(F.data.startswith("category_keywords_"))
+async def manage_category_keywords(callback: CallbackQuery):
+    """Управление ключевыми словами категории"""
+    try:
+        category_id = int(callback.data.split("_")[-1])
+    except Exception:
+        await _safe_callback_answer(callback, "Некорректный ID", show_alert=True)
+        return
+    
+    category = db.get_category(category_id)
+    if not category:
+        await _safe_callback_answer(callback, "Категория не найдена", show_alert=True)
+        return
+    
+    category_keywords = db.get_category_keywords(category_id)
+    all_keywords = db.get_all_keywords_with_ids()
+    
+    text = f"🔑 <b>Ключевые слова категории: {category['name']}</b>\n\n"
+    text += f"Добавлено: {len(category_keywords)}\n\n"
+    
+    if category_keywords:
+        text += "<b>Текущие ключевые слова:</b>\n"
+        for kw in category_keywords[:20]:
+            text += f"• {kw}\n"
+    
+    keyboard = []
+    
+    # Кнопки для добавления ключевых слов
+    category_keyword_ids = set()
+    # Получаем ID ключевых слов категории
+    conn = db.get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT keyword_id FROM category_keywords WHERE category_id = ?", (category_id,))
+    category_keyword_ids = {row[0] for row in cursor.fetchall()}
+    conn.close()
+    
+    for kw in all_keywords:
+        if kw['id'] not in category_keyword_ids:
+            keyboard.append([
+                InlineKeyboardButton(
+                    text=f"➕ {kw['word']}",
+                    callback_data=f"category_keyword_add_{category_id}_{kw['id']}"
+                )
+            ])
+    
+    # Кнопки для удаления ключевых слов
+    if category_keywords:
+        keyboard.append([InlineKeyboardButton(text="🗑 Удалить ключевое слово", callback_data=f"category_keyword_remove_{category_id}")])
+    
+    keyboard.append([InlineKeyboardButton(text="◀️ Назад", callback_data=f"category_view_{category_id}")])
+    
+    await _safe_callback_answer(callback)
+    await _safe_edit_text(callback, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard), parse_mode="HTML")
+
+
+@router.callback_query(F.data.startswith("category_keyword_add_"))
+async def add_keyword_to_category(callback: CallbackQuery):
+    """Добавить ключевое слово в категорию"""
+    try:
+        parts = callback.data.split("_")
+        category_id = int(parts[3])
+        keyword_id = int(parts[4])
+    except Exception:
+        await _safe_callback_answer(callback, "Некорректные параметры", show_alert=True)
+        return
+    
+    success = db.add_category_keyword(category_id, keyword_id)
+    if success:
+        await _safe_callback_answer(callback, "✅ Ключевое слово добавлено", show_alert=True)
+    else:
+        await _safe_callback_answer(callback, "❌ Ошибка", show_alert=True)
+    
+    await manage_category_keywords(callback)
+
+
+@router.callback_query(F.data.startswith("category_keyword_remove_"))
+async def remove_keyword_from_category(callback: CallbackQuery):
+    """Удалить ключевое слово из категории"""
+    try:
+        category_id = int(callback.data.split("_")[-1])
+    except Exception:
+        await _safe_callback_answer(callback, "Некорректный ID", show_alert=True)
+        return
+    
+    category_keywords = db.get_category_keywords(category_id)
+    if not category_keywords:
+        await _safe_callback_answer(callback, "Нет ключевых слов для удаления", show_alert=True)
+        return
+    
+    # Получаем ID ключевых слов категории
+    conn = db.get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT k.id, k.word FROM keywords k
+        INNER JOIN category_keywords ck ON k.id = ck.keyword_id
+        WHERE ck.category_id = ?
+    """, (category_id,))
+    keywords_with_ids = [dict(row) for row in cursor.fetchall()]
+    conn.close()
+    
+    keyboard = []
+    for kw in keywords_with_ids[:20]:
+        keyboard.append([
+            InlineKeyboardButton(
+                text=f"🗑 {kw['word']}",
+                callback_data=f"category_keyword_remove_exec_{category_id}_{kw['id']}"
+            )
+        ])
+    
+    keyboard.append([InlineKeyboardButton(text="◀️ Назад", callback_data=f"category_keywords_{category_id}")])
+    
+    await _safe_callback_answer(callback)
+    await _safe_edit_text(
+        callback,
+        "🗑 <b>Удаление ключевого слова</b>\n\nВыберите ключевое слово для удаления:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard),
+        parse_mode="HTML"
+    )
+
+
+@router.callback_query(F.data.startswith("category_keyword_remove_exec_"))
+async def remove_keyword_from_category_execute(callback: CallbackQuery):
+    """Выполнить удаление ключевого слова из категории"""
+    try:
+        parts = callback.data.split("_")
+        category_id = int(parts[4])
+        keyword_id = int(parts[5])
+    except Exception:
+        await _safe_callback_answer(callback, "Некорректные параметры", show_alert=True)
+        return
+    
+    success = db.remove_category_keyword(category_id, keyword_id)
+    if success:
+        await _safe_callback_answer(callback, "✅ Ключевое слово удалено", show_alert=True)
+    else:
+        await _safe_callback_answer(callback, "❌ Ошибка", show_alert=True)
+    
+    await manage_category_keywords(callback)
+
+
+@router.callback_query(F.data.startswith("category_stopwords_"))
+async def manage_category_stopwords(callback: CallbackQuery):
+    """Управление стоп-словами категории"""
+    try:
+        category_id = int(callback.data.split("_")[-1])
+    except Exception:
+        await _safe_callback_answer(callback, "Некорректный ID", show_alert=True)
+        return
+    
+    category = db.get_category(category_id)
+    if not category:
+        await _safe_callback_answer(callback, "Категория не найдена", show_alert=True)
+        return
+    
+    category_stopwords = db.get_category_stopwords(category_id)
+    all_stopwords = db.get_all_stopwords_with_ids()
+    
+    text = f"🛑 <b>Стоп-слова категории: {category['name']}</b>\n\n"
+    text += f"Добавлено: {len(category_stopwords)}\n\n"
+    
+    if category_stopwords:
+        text += "<b>Текущие стоп-слова:</b>\n"
+        for sw in category_stopwords[:20]:
+            text += f"• {sw}\n"
+    
+    keyboard = []
+    
+    # Получаем ID стоп-слов категории
+    conn = db.get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT stopword_id FROM category_stopwords WHERE category_id = ?", (category_id,))
+    category_stopword_ids = {row[0] for row in cursor.fetchall()}
+    conn.close()
+    
+    for sw in all_stopwords:
+        if sw['id'] not in category_stopword_ids:
+            keyboard.append([
+                InlineKeyboardButton(
+                    text=f"➕ {sw['word']}",
+                    callback_data=f"category_stopword_add_{category_id}_{sw['id']}"
+                )
+            ])
+    
+    if category_stopwords:
+        keyboard.append([InlineKeyboardButton(text="🗑 Удалить стоп-слово", callback_data=f"category_stopword_remove_{category_id}")])
+    
+    keyboard.append([InlineKeyboardButton(text="◀️ Назад", callback_data=f"category_view_{category_id}")])
+    
+    await _safe_callback_answer(callback)
+    await _safe_edit_text(callback, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard), parse_mode="HTML")
+
+
+@router.callback_query(F.data.startswith("category_stopword_add_"))
+async def add_stopword_to_category(callback: CallbackQuery):
+    """Добавить стоп-слово в категорию"""
+    try:
+        parts = callback.data.split("_")
+        category_id = int(parts[3])
+        stopword_id = int(parts[4])
+    except Exception:
+        await _safe_callback_answer(callback, "Некорректные параметры", show_alert=True)
+        return
+    
+    success = db.add_category_stopword(category_id, stopword_id)
+    if success:
+        await _safe_callback_answer(callback, "✅ Стоп-слово добавлено", show_alert=True)
+    else:
+        await _safe_callback_answer(callback, "❌ Ошибка", show_alert=True)
+    
+    await manage_category_stopwords(callback)
+
+
+@router.callback_query(F.data.startswith("category_stopword_remove_"))
+async def remove_stopword_from_category(callback: CallbackQuery):
+    """Удалить стоп-слово из категории"""
+    try:
+        category_id = int(callback.data.split("_")[-1])
+    except Exception:
+        await _safe_callback_answer(callback, "Некорректный ID", show_alert=True)
+        return
+    
+    category_stopwords = db.get_category_stopwords(category_id)
+    if not category_stopwords:
+        await _safe_callback_answer(callback, "Нет стоп-слов для удаления", show_alert=True)
+        return
+    
+    # Получаем ID стоп-слов категории
+    conn = db.get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT s.id, s.word FROM stopwords s
+        INNER JOIN category_stopwords cs ON s.id = cs.stopword_id
+        WHERE cs.category_id = ?
+    """, (category_id,))
+    stopwords_with_ids = [dict(row) for row in cursor.fetchall()]
+    conn.close()
+    
+    keyboard = []
+    for sw in stopwords_with_ids[:20]:
+        keyboard.append([
+            InlineKeyboardButton(
+                text=f"🗑 {sw['word']}",
+                callback_data=f"category_stopword_remove_exec_{category_id}_{sw['id']}"
+            )
+        ])
+    
+    keyboard.append([InlineKeyboardButton(text="◀️ Назад", callback_data=f"category_stopwords_{category_id}")])
+    
+    await _safe_callback_answer(callback)
+    await _safe_edit_text(
+        callback,
+        "🗑 <b>Удаление стоп-слова</b>\n\nВыберите стоп-слово для удаления:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard),
+        parse_mode="HTML"
+    )
+
+
+@router.callback_query(F.data.startswith("category_stopword_remove_exec_"))
+async def remove_stopword_from_category_execute(callback: CallbackQuery):
+    """Выполнить удаление стоп-слова из категории"""
+    try:
+        parts = callback.data.split("_")
+        category_id = int(parts[4])
+        stopword_id = int(parts[5])
+    except Exception:
+        await _safe_callback_answer(callback, "Некорректные параметры", show_alert=True)
+        return
+    
+    success = db.remove_category_stopword(category_id, stopword_id)
+    if success:
+        await _safe_callback_answer(callback, "✅ Стоп-слово удалено", show_alert=True)
+    else:
+        await _safe_callback_answer(callback, "❌ Ошибка", show_alert=True)
+    
+    await manage_category_stopwords(callback)
 
 
 # ========== НАЗАД ==========

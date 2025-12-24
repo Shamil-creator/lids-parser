@@ -8,7 +8,7 @@ import time
 import os
 from aiogram import Bot, Dispatcher
 from aiogram.fsm.storage.memory import MemoryStorage
-from handlers import admin_panel
+from handlers import admin_panel, category_handlers
 from services.userbot_manager import UserbotManager
 import config
 
@@ -54,11 +54,14 @@ async def main():
     dp = Dispatcher(storage=MemoryStorage())
 
     # Регистрируем роутеры
+    # category_handlers должен быть первым, чтобы его обработчики имели приоритет
+    dp.include_router(category_handlers.router)
     dp.include_router(admin_panel.router)
 
     # Создаем менеджер userbot'ов
     userbot_manager = UserbotManager()
     admin_panel.set_userbot_manager(userbot_manager)
+    category_handlers.set_userbot_manager(userbot_manager)
 
     # Запускаем userbot manager в фоне
     asyncio.create_task(userbot_manager.start())

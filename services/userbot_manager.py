@@ -100,8 +100,15 @@ class UserbotManager:
                 print(f"[{session_name}] Client started: @{me.username}")
 
                 self.clients[session_name] = client
-                self.parsers[session_name] = ChannelParser(client)
-                self.messengers[session_name] = Messenger(client, session_name)
+                # Получаем все категории для этого userbot'а
+                userbot_categories = db.get_userbot_categories(session_name)
+                # Передаем все категории в парсер, чтобы он объединял ключевые слова и стоп-слова
+                category_id = userbot_categories[0] if userbot_categories else None
+                
+                parser = ChannelParser(client, category_id=category_id, category_ids=userbot_categories)
+                self.parsers[session_name] = parser
+                # Передаем parser в messenger для определения категории по ключевым словам
+                self.messengers[session_name] = Messenger(client, session_name, category_id=category_id, parser=parser)
 
                 # Запуск воркера
                 if self.running:
@@ -159,11 +166,37 @@ class UserbotManager:
                 parser.refresh_filters()
                 messenger.refresh_template()
 
-                # Список каналов
-                channels = db.get_all_channels()
+                # Получаем все категории для этого userbot'а
+                userbot_categories = db.get_userbot_categories(session_name)
+                
+                if userbot_categories:
+                    # Парсим каналы всех категорий userbot'а
+                    all_channels = []
+                    for cat_id in userbot_categories:
+                        cat_channels = db.get_category_channels(cat_id)
+                        all_channels.extend(cat_channels)
+                    # Убираем дубликаты по ID
+                    seen_ids = set()
+                    channels = []
+                    for ch in all_channels:
+                        if ch['id'] not in seen_ids:
+                            seen_ids.add(ch['id'])
+                            channels.append(ch)
+                else:
+                    # Обратная совместимость: парсим все каналы
+                    channels = db.get_all_channels()
 
                 for channel in channels:
                     try:
+                        # Определяем категорию канала для правильной пересылки в канал менеджеров
+                        channel_categories = db.get_channel_categories(channel['id'])
+                        channel_category_id = channel_categories[0] if channel_categories else None
+                        
+                        # Временно обновляем category_id в messenger'е для этого канала
+                        original_category_id = messenger.category_id
+                        if channel_category_id:
+                            messenger.category_id = channel_category_id
+                        
                         # Парсинг канала
                         messages = await parser.parse_channel(channel['link'], limit=50)
 
@@ -187,6 +220,9 @@ class UserbotManager:
                                 channel['link'],
                                 message_text[:500]
                             )
+                        
+                        # Восстанавливаем оригинальный category_id
+                        messenger.category_id = original_category_id
 
                             # Задержка между сообщениями
                             await asyncio.sleep(config.MIN_DELAY_BETWEEN_MESSAGES)
@@ -438,3 +474,22 @@ class UserbotManager:
         account = next((a for a in db.get_all_accounts() if a['session_name'] == session_name), None)
         if account:
             await self.add_client(session_name, account['phone'])
+    
+    async def update_category_for_session(self, session_name: str):
+        """Обновить category_ids для парсера и messenger'а сессии"""
+        if session_name not in self.parsers or session_name not in self.messengers:
+            return
+        
+        # Получаем все категории для этого userbot'а
+        userbot_categories = db.get_userbot_categories(session_name)
+        # Используем первую категорию для messenger'а (для определения канала менеджеров)
+        category_id = userbot_categories[0] if userbot_categories else None
+        
+        # Обновляем category_ids в парсере
+        if hasattr(self.parsers[session_name], 'category_ids'):
+            self.parsers[session_name].category_ids = userbot_categories
+        self.parsers[session_name].category_id = category_id  # Для обратной совместимости
+        self.parsers[session_name].refresh_filters()
+        
+        # Обновляем category_id в messenger'е
+        self.messengers[session_name].category_id = category_id

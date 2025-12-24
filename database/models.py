@@ -62,7 +62,8 @@ class Database:
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS private_groups (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                invite_link TEXT NOT NULL UNIQUE,
+                category_id INTEGER,
+                invite_link TEXT NOT NULL,
                 chat_id INTEGER UNIQUE,
                 title TEXT,
                 assigned_session_name TEXT,
@@ -84,9 +85,22 @@ class Database:
                 
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (assigned_session_name) REFERENCES accounts(session_name) ON DELETE SET NULL
+                FOREIGN KEY (assigned_session_name) REFERENCES accounts(session_name) ON DELETE SET NULL,
+                FOREIGN KEY (category_id) REFERENCES categories(id) ON DELETE CASCADE,
+                UNIQUE(category_id, invite_link)
             )
         """)
+        
+        # Миграция: добавляем category_id если его нет
+        try:
+            cursor.execute("ALTER TABLE private_groups ADD COLUMN category_id INTEGER")
+            cursor.execute("""
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_category_invite 
+                ON private_groups(category_id, invite_link)
+            """)
+        except sqlite3.OperationalError:
+            # Колонка уже существует или индекс уже создан
+            pass
 
         # Таблица ключевых слов
         cursor.execute("""
@@ -162,6 +176,78 @@ class Database:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 channel_id INTEGER UNIQUE NOT NULL,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        # Таблица категорий
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS categories (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT UNIQUE NOT NULL,
+                managers_channel_id INTEGER,
+                is_active INTEGER DEFAULT 1,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        
+        # Миграция: удаляем assigned_session_name если он есть (старая структура)
+        try:
+            cursor.execute("ALTER TABLE categories DROP COLUMN assigned_session_name")
+        except sqlite3.OperationalError:
+            # Колонка уже удалена или не существует
+            pass
+
+        # Таблица связи категорий и каналов (многие-ко-многим)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS category_channels (
+                category_id INTEGER NOT NULL,
+                channel_id INTEGER NOT NULL,
+                PRIMARY KEY (category_id, channel_id),
+                FOREIGN KEY (category_id) REFERENCES categories(id) ON DELETE CASCADE,
+                FOREIGN KEY (channel_id) REFERENCES channels(id) ON DELETE CASCADE
+            )
+        """)
+
+        # Таблица связи категорий и ключевых слов (многие-ко-многим)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS category_keywords (
+                category_id INTEGER NOT NULL,
+                keyword_id INTEGER NOT NULL,
+                PRIMARY KEY (category_id, keyword_id),
+                FOREIGN KEY (category_id) REFERENCES categories(id) ON DELETE CASCADE,
+                FOREIGN KEY (keyword_id) REFERENCES keywords(id) ON DELETE CASCADE
+            )
+        """)
+
+        # Таблица связи категорий и стоп-слов (многие-ко-многим)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS category_stopwords (
+                category_id INTEGER NOT NULL,
+                stopword_id INTEGER NOT NULL,
+                PRIMARY KEY (category_id, stopword_id),
+                FOREIGN KEY (category_id) REFERENCES categories(id) ON DELETE CASCADE,
+                FOREIGN KEY (stopword_id) REFERENCES stopwords(id) ON DELETE CASCADE
+            )
+        """)
+
+        # Таблица связи категорий и userbot'ов (многие-ко-многим)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS category_userbots (
+                category_id INTEGER NOT NULL,
+                session_name TEXT NOT NULL,
+                PRIMARY KEY (category_id, session_name),
+                FOREIGN KEY (category_id) REFERENCES categories(id) ON DELETE CASCADE,
+                FOREIGN KEY (session_name) REFERENCES accounts(session_name) ON DELETE CASCADE
+            )
+        """)
+
+        # Таблица активной категории (только одна может быть активна)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS active_category (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                category_id INTEGER,
+                FOREIGN KEY (category_id) REFERENCES categories(id) ON DELETE SET NULL
             )
         """)
 
@@ -327,20 +413,20 @@ class Database:
     # LOST_ACCESS → DISABLED (превышен лимит ошибок)
     # DISABLED → NEW (ручная реактивация)
 
-    def add_private_group(self, invite_link: str) -> Optional[int]:
+    def add_private_group(self, invite_link: str, category_id: Optional[int] = None) -> Optional[int]:
         """Добавить приватную группу (state=NEW)"""
         try:
             conn = self.get_connection()
             cursor = conn.cursor()
             cursor.execute(
-                "INSERT OR IGNORE INTO private_groups (invite_link, state) VALUES (?, 'NEW')",
-                (invite_link,),
+                "INSERT OR IGNORE INTO private_groups (invite_link, category_id, state) VALUES (?, ?, 'NEW')",
+                (invite_link, category_id),
             )
             group_id = cursor.lastrowid
             
             # Если уже была (INSERT OR IGNORE), получаем её ID
             if group_id == 0:
-                cursor.execute("SELECT id FROM private_groups WHERE invite_link = ?", (invite_link,))
+                cursor.execute("SELECT id FROM private_groups WHERE invite_link = ? AND category_id = ?", (invite_link, category_id))
                 row = cursor.fetchone()
                 group_id = row[0] if row else None
             
@@ -369,14 +455,21 @@ class Database:
         conn.close()
         return dict(row) if row else None
 
-    def get_all_private_groups(self) -> List[dict]:
-        """Получить все приватные группы"""
+    def get_all_private_groups(self, category_id: Optional[int] = None) -> List[dict]:
+        """Получить все приватные группы (опционально по категории)"""
         conn = self.get_connection()
         cursor = conn.cursor()
-        cursor.execute("SELECT * FROM private_groups ORDER BY id DESC")
+        if category_id:
+            cursor.execute("SELECT * FROM private_groups WHERE category_id = ? ORDER BY id DESC", (category_id,))
+        else:
+            cursor.execute("SELECT * FROM private_groups ORDER BY id DESC")
         rows = cursor.fetchall()
         conn.close()
         return [dict(row) for row in rows]
+    
+    def get_private_groups_by_category(self, category_id: int) -> List[dict]:
+        """Получить приватные группы по категории"""
+        return self.get_all_private_groups(category_id=category_id)
 
     def get_private_groups_by_state(self, state: str) -> List[dict]:
         """Получить группы в определённом состоянии"""
@@ -933,3 +1026,355 @@ class Database:
         except Exception as e:
             print(f"Error clearing managers channel ID: {e}")
             return False
+
+    # ========== КАТЕГОРИИ ==========
+    def add_category(self, name: str, managers_channel_id: Optional[int] = None) -> Optional[int]:
+        """Добавить категорию"""
+        try:
+            conn = self.get_connection()
+            cursor = conn.cursor()
+            # Проверяем есть ли поле assigned_session_name (старая структура)
+            try:
+                cursor.execute("""
+                    INSERT INTO categories (name, managers_channel_id, updated_at)
+                    VALUES (?, ?, CURRENT_TIMESTAMP)
+                """, (name, managers_channel_id))
+            except sqlite3.OperationalError:
+                # Старая структура с assigned_session_name
+                cursor.execute("""
+                    INSERT INTO categories (name, assigned_session_name, managers_channel_id, updated_at)
+                    VALUES (?, NULL, ?, CURRENT_TIMESTAMP)
+                """, (name, managers_channel_id))
+            category_id = cursor.lastrowid
+            conn.commit()
+            conn.close()
+            return category_id
+        except Exception as e:
+            print(f"Error adding category: {e}")
+            return None
+
+    def get_category(self, category_id: int) -> Optional[dict]:
+        """Получить категорию по ID"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM categories WHERE id = ?", (category_id,))
+        row = cursor.fetchone()
+        conn.close()
+        return dict(row) if row else None
+
+    def get_all_categories(self) -> List[dict]:
+        """Получить все категории"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM categories ORDER BY name")
+        rows = cursor.fetchall()
+        conn.close()
+        return [dict(row) for row in rows]
+
+    def update_category(self, category_id: int, updates: dict) -> bool:
+        """Обновить категорию"""
+        try:
+            conn = self.get_connection()
+            cursor = conn.cursor()
+            
+            set_clause = "updated_at = CURRENT_TIMESTAMP"
+            params = []
+            
+            for key, value in updates.items():
+                set_clause += f", {key} = ?"
+                params.append(value)
+            
+            params.append(category_id)
+            
+            cursor.execute(
+                f"UPDATE categories SET {set_clause} WHERE id = ?",
+                params,
+            )
+            conn.commit()
+            conn.close()
+            return True
+        except Exception as e:
+            print(f"Error updating category: {e}")
+            return False
+
+    def delete_category(self, category_id: int) -> bool:
+        """Удалить категорию"""
+        try:
+            conn = self.get_connection()
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM categories WHERE id = ?", (category_id,))
+            conn.commit()
+            conn.close()
+            return True
+        except Exception as e:
+            print(f"Error deleting category: {e}")
+            return False
+
+    def set_active_category(self, category_id: Optional[int]) -> bool:
+        """Установить активную категорию"""
+        try:
+            conn = self.get_connection()
+            cursor = conn.cursor()
+            # Удаляем старую запись
+            cursor.execute("DELETE FROM active_category")
+            # Добавляем новую
+            if category_id:
+                cursor.execute("INSERT INTO active_category (id, category_id) VALUES (1, ?)", (category_id,))
+            conn.commit()
+            conn.close()
+            return True
+        except Exception as e:
+            print(f"Error setting active category: {e}")
+            return False
+
+    def get_active_category(self) -> Optional[dict]:
+        """Получить активную категорию"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT category_id FROM active_category WHERE id = 1")
+        row = cursor.fetchone()
+        if not row or not row[0]:
+            conn.close()
+            return None
+        
+        category_id = row[0]
+        cursor.execute("SELECT * FROM categories WHERE id = ?", (category_id,))
+        category_row = cursor.fetchone()
+        conn.close()
+        return dict(category_row) if category_row else None
+
+    def get_category_channels(self, category_id: int) -> List[dict]:
+        """Получить каналы категории"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT c.* FROM channels c
+            INNER JOIN category_channels cc ON c.id = cc.channel_id
+            WHERE cc.category_id = ?
+        """, (category_id,))
+        rows = cursor.fetchall()
+        conn.close()
+        return [dict(row) for row in rows]
+
+    def add_category_channel(self, category_id: int, channel_id: int) -> bool:
+        """Добавить канал в категорию"""
+        try:
+            conn = self.get_connection()
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT OR IGNORE INTO category_channels (category_id, channel_id)
+                VALUES (?, ?)
+            """, (category_id, channel_id))
+            conn.commit()
+            conn.close()
+            return True
+        except Exception as e:
+            print(f"Error adding channel to category: {e}")
+            return False
+
+    def remove_category_channel(self, category_id: int, channel_id: int) -> bool:
+        """Удалить канал из категории"""
+        try:
+            conn = self.get_connection()
+            cursor = conn.cursor()
+            cursor.execute("""
+                DELETE FROM category_channels
+                WHERE category_id = ? AND channel_id = ?
+            """, (category_id, channel_id))
+            conn.commit()
+            conn.close()
+            return True
+        except Exception as e:
+            print(f"Error removing channel from category: {e}")
+            return False
+
+    def get_channel_categories(self, channel_id: int) -> List[int]:
+        """Получить список категорий канала"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT category_id FROM category_channels
+            WHERE channel_id = ?
+        """, (channel_id,))
+        rows = cursor.fetchall()
+        conn.close()
+        return [row[0] for row in rows]
+
+    def get_channel_categories_by_link(self, channel_link: str) -> List[int]:
+        """Получить список категорий канала по ссылке"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        # Находим канал по ссылке
+        cursor.execute("SELECT id FROM channels WHERE link = ?", (channel_link,))
+        channel_row = cursor.fetchone()
+        if not channel_row:
+            conn.close()
+            return []
+        
+        channel_id = channel_row[0]
+        # Получаем категории канала
+        cursor.execute("""
+            SELECT category_id FROM category_channels
+            WHERE channel_id = ?
+        """, (channel_id,))
+        rows = cursor.fetchall()
+        conn.close()
+        return [row[0] for row in rows]
+
+    def get_category_keywords(self, category_id: int) -> List[str]:
+        """Получить ключевые слова категории"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT k.word FROM keywords k
+            INNER JOIN category_keywords ck ON k.id = ck.keyword_id
+            WHERE ck.category_id = ?
+        """, (category_id,))
+        rows = cursor.fetchall()
+        conn.close()
+        return [row[0] for row in rows]
+
+    def add_category_keyword(self, category_id: int, keyword_id: int) -> bool:
+        """Добавить ключевое слово в категорию"""
+        try:
+            conn = self.get_connection()
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT OR IGNORE INTO category_keywords (category_id, keyword_id)
+                VALUES (?, ?)
+            """, (category_id, keyword_id))
+            conn.commit()
+            conn.close()
+            return True
+        except Exception as e:
+            print(f"Error adding keyword to category: {e}")
+            return False
+
+    def remove_category_keyword(self, category_id: int, keyword_id: int) -> bool:
+        """Удалить ключевое слово из категории"""
+        try:
+            conn = self.get_connection()
+            cursor = conn.cursor()
+            cursor.execute("""
+                DELETE FROM category_keywords
+                WHERE category_id = ? AND keyword_id = ?
+            """, (category_id, keyword_id))
+            conn.commit()
+            conn.close()
+            return True
+        except Exception as e:
+            print(f"Error removing keyword from category: {e}")
+            return False
+
+    def get_category_stopwords(self, category_id: int) -> List[str]:
+        """Получить стоп-слова категории"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT s.word FROM stopwords s
+            INNER JOIN category_stopwords cs ON s.id = cs.stopword_id
+            WHERE cs.category_id = ?
+        """, (category_id,))
+        rows = cursor.fetchall()
+        conn.close()
+        return [row[0] for row in rows]
+
+    def add_category_stopword(self, category_id: int, stopword_id: int) -> bool:
+        """Добавить стоп-слово в категорию"""
+        try:
+            conn = self.get_connection()
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT OR IGNORE INTO category_stopwords (category_id, stopword_id)
+                VALUES (?, ?)
+            """, (category_id, stopword_id))
+            conn.commit()
+            conn.close()
+            return True
+        except Exception as e:
+            print(f"Error adding stopword to category: {e}")
+            return False
+
+    def remove_category_stopword(self, category_id: int, stopword_id: int) -> bool:
+        """Удалить стоп-слово из категории"""
+        try:
+            conn = self.get_connection()
+            cursor = conn.cursor()
+            cursor.execute("""
+                DELETE FROM category_stopwords
+                WHERE category_id = ? AND stopword_id = ?
+            """, (category_id, stopword_id))
+            conn.commit()
+            conn.close()
+            return True
+        except Exception as e:
+            print(f"Error removing stopword from category: {e}")
+            return False
+
+    # ========== USERBOT'Ы КАТЕГОРИЙ (многие-ко-многим) ==========
+    def get_category_userbots(self, category_id: int) -> List[str]:
+        """Получить список userbot'ов категории"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT session_name FROM category_userbots
+            WHERE category_id = ?
+        """, (category_id,))
+        rows = cursor.fetchall()
+        conn.close()
+        return [row[0] for row in rows]
+
+    def add_category_userbot(self, category_id: int, session_name: str) -> bool:
+        """Добавить userbot в категорию"""
+        try:
+            conn = self.get_connection()
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT OR IGNORE INTO category_userbots (category_id, session_name)
+                VALUES (?, ?)
+            """, (category_id, session_name))
+            conn.commit()
+            conn.close()
+            return True
+        except Exception as e:
+            print(f"Error adding userbot to category: {e}")
+            return False
+
+    def remove_category_userbot(self, category_id: int, session_name: str) -> bool:
+        """Удалить userbot из категории"""
+        try:
+            conn = self.get_connection()
+            cursor = conn.cursor()
+            cursor.execute("""
+                DELETE FROM category_userbots
+                WHERE category_id = ? AND session_name = ?
+            """, (category_id, session_name))
+            conn.commit()
+            conn.close()
+            return True
+        except Exception as e:
+            print(f"Error removing userbot from category: {e}")
+            return False
+
+    def get_userbot_categories(self, session_name: str) -> List[int]:
+        """Получить список категорий userbot'а"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT category_id FROM category_userbots
+            WHERE session_name = ?
+        """, (session_name,))
+        rows = cursor.fetchall()
+        conn.close()
+        return [row[0] for row in rows]
+
+    def get_all_category_userbots(self) -> List[dict]:
+        """Получить все связи категорий и userbot'ов"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT category_id, session_name FROM category_userbots
+        """)
+        rows = cursor.fetchall()
+        conn.close()
+        return [{"category_id": row[0], "session_name": row[1]} for row in rows]

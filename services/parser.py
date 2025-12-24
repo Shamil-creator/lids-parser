@@ -14,16 +14,35 @@ db = Database()
 _WORD_RE_CACHE: dict[str, re.Pattern] = {}
 
 class ChannelParser:
-    def __init__(self, client: Client):
+    def __init__(self, client: Client, category_id: Optional[int] = None, category_ids: Optional[List[int]] = None):
         self.client = client
+        self.category_id = category_id  # Для обратной совместимости
+        self.category_ids = category_ids or ([category_id] if category_id else [])  # Список всех категорий
         self.keywords: List[str] = []
         self.stopwords: List[str] = []
         self.refresh_filters()
 
     def refresh_filters(self):
-        """Обновить ключевые слова и стоп-слова из БД"""
-        self.keywords = [str(w).lower().strip() for w in (db.get_all_keywords() or []) if str(w).strip()]
-        self.stopwords = [str(w).lower().strip() for w in (db.get_all_stopwords() or []) if str(w).strip()]
+        """Обновить ключевые слова и стоп-слова из БД (из категорий или глобально)"""
+        if self.category_ids:
+            # Объединяем ключевые слова и стоп-слова всех категорий
+            all_keywords = set()
+            all_stopwords = set()
+            for cat_id in self.category_ids:
+                keywords = db.get_category_keywords(cat_id) or []
+                stopwords = db.get_category_stopwords(cat_id) or []
+                all_keywords.update(str(w).lower().strip() for w in keywords if str(w).strip())
+                all_stopwords.update(str(w).lower().strip() for w in stopwords if str(w).strip())
+            self.keywords = list(all_keywords)
+            self.stopwords = list(all_stopwords)
+        elif self.category_id:
+            # Используем ключевые слова и стоп-слова одной категории (старый способ)
+            self.keywords = [str(w).lower().strip() for w in (db.get_category_keywords(self.category_id) or []) if str(w).strip()]
+            self.stopwords = [str(w).lower().strip() for w in (db.get_category_stopwords(self.category_id) or []) if str(w).strip()]
+        else:
+            # Используем глобальные ключевые слова и стоп-слова (для обратной совместимости)
+            self.keywords = [str(w).lower().strip() for w in (db.get_all_keywords() or []) if str(w).strip()]
+            self.stopwords = [str(w).lower().strip() for w in (db.get_all_stopwords() or []) if str(w).strip()]
 
     @staticmethod
     def _compile_word_regex(word: str) -> re.Pattern:
@@ -77,6 +96,44 @@ class ChannelParser:
 
         print("[ChannelParser] ✅ Сообщение прошло все фильтры")
         return True
+
+    def detect_category_by_keywords(self, text: str) -> Optional[int]:
+        """Определить категорию сообщения по ключевым словам"""
+        if not self.category_ids or not text:
+            return None
+        
+        text_lower = text.lower()
+        category_keyword_matches = {}
+        
+        # Проверяем ключевые слова каждой категории
+        for cat_id in self.category_ids:
+            keywords = db.get_category_keywords(cat_id) or []
+            stopwords = db.get_category_stopwords(cat_id) or []
+            
+            # Проверяем стоп-слова - если есть стоп-слово, категория не подходит
+            has_stopword = False
+            for stopword in stopwords:
+                if self._contains_any_word(text_lower, [str(stopword).lower().strip()]):
+                    has_stopword = True
+                    break
+            
+            if has_stopword:
+                continue
+            
+            # Считаем совпадения ключевых слов
+            matches = 0
+            for keyword in keywords:
+                if self._contains_any_word(text_lower, [str(keyword).lower().strip()]):
+                    matches += 1
+            
+            if matches > 0:
+                category_keyword_matches[cat_id] = matches
+        
+        # Возвращаем категорию с наибольшим количеством совпадений
+        if category_keyword_matches:
+            return max(category_keyword_matches.items(), key=lambda x: x[1])[0]
+        
+        return None
 
     def normalize_chat_target(self, chat: Union[int, str]) -> Optional[Union[int, str]]:
         """
