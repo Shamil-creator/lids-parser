@@ -1266,6 +1266,14 @@ async def add_account_simple_phone(message: Message, state: FSMContext):
     # Создаем временную сессию для авторизации
     session_name = f"temp_{message.from_user.id}"
     
+    # Удаляем старый session файл, если он существует (на случай повторного запроса)
+    old_session_path = os.path.join(config.SESSIONS_DIR, f"{session_name}.session")
+    if os.path.exists(old_session_path):
+        try:
+            os.remove(old_session_path)
+        except:
+            pass
+    
     try:
         client = Client(
             name=session_name,
@@ -1317,6 +1325,14 @@ async def resend_code(callback: CallbackQuery, state: FSMContext):
     client = None
     try:
         await callback.answer("Отправка нового кода...")
+        
+        # Удаляем старый session файл, чтобы избежать конфликтов
+        old_session_path = os.path.join(config.SESSIONS_DIR, f"{session_name}.session")
+        if os.path.exists(old_session_path):
+            try:
+                os.remove(old_session_path)
+            except:
+                pass
         
         client = Client(
             name=session_name,
@@ -1727,6 +1743,13 @@ async def add_account_phone(message: Message, state: FSMContext):
     # Создаем временную сессию для авторизации
     session_name = f"temp_{message.from_user.id}"
     session_path = os.path.join(config.SESSIONS_DIR, f"{session_name}.session")
+    
+    # Удаляем старый session файл, если он существует (на случай повторного запроса)
+    if os.path.exists(session_path):
+        try:
+            os.remove(session_path)
+        except:
+            pass
 
     try:
         client = Client(
@@ -1774,7 +1797,16 @@ async def add_account_code(message: Message, state: FSMContext):
     phone = data['phone']
     api_id = data['api_id']
     api_hash = data['api_hash']
-    phone_code_hash = data['phone_code_hash']
+    phone_code_hash = data.get('phone_code_hash')
+    
+    if not phone_code_hash:
+        await message.answer(
+            "❌ <b>Ошибка:</b> Данные для авторизации утеряны.\n\n"
+            "Пожалуйста, начните процесс добавления аккаунта заново.",
+            parse_mode="HTML"
+        )
+        await state.clear()
+        return
 
     client = None
     try:
@@ -1858,7 +1890,53 @@ async def add_account_code(message: Message, state: FSMContext):
         error_msg = str(e).lower()
         data = await state.get_data()
         category_id = data.get('category_id')
+        phone = data.get('phone')
+        api_id = data.get('api_id')
+        api_hash = data.get('api_hash')
+        session_name = data.get('session_name')
         
+        # Если код истек, автоматически запрашиваем новый код
+        if "expired" in error_msg or isinstance(e, PhoneCodeExpired):
+            try:
+                await message.answer("⏳ Автоматически запрашиваю новый код...")
+                
+                # Запрашиваем новый код
+                resend_client = Client(
+                    name=session_name,
+                    workdir=config.SESSIONS_DIR,
+                    api_id=api_id,
+                    api_hash=api_hash
+                )
+                await resend_client.connect()
+                sent_code = await resend_client.send_code(phone)
+                
+                # Обновляем phone_code_hash
+                await state.update_data(phone_code_hash=sent_code.phone_code_hash)
+                
+                await resend_client.disconnect()
+                
+                if category_id:
+                    keyboard = [
+                        [InlineKeyboardButton(text="❌ Отмена", callback_data=f"cat_userbot_{category_id}")]
+                    ]
+                else:
+                    keyboard = [
+                        [InlineKeyboardButton(text="❌ Отмена", callback_data="admin_accounts")]
+                    ]
+                
+                msg_text = (
+                    "✅ <b>Новый код отправлен автоматически!</b>\n\n"
+                    "Предыдущий код истек, поэтому был запрошен новый.\n\n"
+                    "Отправьте новый код подтверждения из Telegram.\n\n"
+                    "💡 <i>Можно вводить код с пробелами или дефисами</i>"
+                )
+                await message.answer(msg_text, reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard), parse_mode="HTML")
+                return
+            except Exception as resend_error:
+                # Если автоматический перезапрос не удался, предлагаем вручную
+                pass
+        
+        # Для неверного кода или если автоматический перезапрос не удался
         if category_id:
             keyboard = [
                 [InlineKeyboardButton(text="🔄 Запросить новый код", callback_data="account_resend_code")],
@@ -1870,10 +1948,10 @@ async def add_account_code(message: Message, state: FSMContext):
                 [InlineKeyboardButton(text="❌ Отмена", callback_data="admin_accounts")]
             ]
         
-        if "expired" in error_msg:
+        if "expired" in error_msg or isinstance(e, PhoneCodeExpired):
             msg_text = (
                 "❌ <b>Код истек!</b>\n\n"
-                "Код подтверждения действителен ограниченное время. "
+                "Код подтверждения действителен ограниченное время.\n"
                 "Нажмите '🔄 Запросить новый код' для получения нового кода.\n\n"
                 f"<i>Детали: {e}</i>"
             )
@@ -1881,7 +1959,8 @@ async def add_account_code(message: Message, state: FSMContext):
             msg_text = (
                 "❌ <b>Неверный код!</b>\n\n"
                 "Проверьте правильность кода. Код должен содержать только цифры.\n"
-                "Если код истек или не приходит, запросите новый код.\n\n"
+                "Убедитесь, что используете последний полученный код.\n\n"
+                "⚠️ <b>Важно:</b> Если вы запросили код несколько раз, используйте только последний полученный код!\n\n"
                 f"<i>Детали: {e}</i>"
             )
         
