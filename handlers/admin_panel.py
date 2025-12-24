@@ -393,10 +393,11 @@ def get_category_menu(category_id: int, user_id: int = None) -> InlineKeyboardMa
     keyboard = [
         [InlineKeyboardButton(text="🔒 Приватные группы", callback_data=f"cat_private_groups_{category_id}")],
         [InlineKeyboardButton(text="🌐 Публичные группы", callback_data=f"cat_public_groups_{category_id}")],
-        [InlineKeyboardButton(text=f"{'✅' if has_userbot else '❌'} Userbot'ы ({len(userbots)})", callback_data=f"cat_userbot_{category_id}")],
-        [InlineKeyboardButton(text=f"{'✅' if has_channel else '❌'} Канал менеджеров", callback_data=f"cat_managers_channel_{category_id}")],
         [InlineKeyboardButton(text=f"🔑 Ключевые слова ({len(keywords)})", callback_data=f"cat_keywords_{category_id}")],
         [InlineKeyboardButton(text=f"🛑 Стоп-слова ({len(stopwords)})", callback_data=f"cat_stopwords_{category_id}")],
+        [InlineKeyboardButton(text=f"{'✅' if has_userbot else '❌'} Userbot'ы ({len(userbots)})", callback_data=f"cat_userbot_{category_id}")],
+        [InlineKeyboardButton(text=f"{'✅' if has_channel else '❌'} Канал менеджеров", callback_data=f"cat_managers_channel_{category_id}")],
+        [InlineKeyboardButton(text="💬 Текст сообщения", callback_data=f"category_edit_message_{category_id}")],
         [InlineKeyboardButton(text="📊 Статистика", callback_data=f"category_stats_{category_id}")],
     ]
     
@@ -1035,11 +1036,13 @@ async def show_keywords(callback: CallbackQuery):
 
     keyboard = [
         [InlineKeyboardButton(text="➕ Добавить", callback_data="keywords_add")],
-        [InlineKeyboardButton(text="🗑 Удалить", callback_data="keywords_delete")],
-        [InlineKeyboardButton(text="◀️ Назад", callback_data="admin_back")],
     ]
-    await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
-    await callback.answer()
+    # Показываем кнопку "🗑 Удалить" только если есть ключевые слова
+    if keywords:
+        keyboard.append([InlineKeyboardButton(text="🗑 Удалить", callback_data="keywords_delete")])
+    keyboard.append([InlineKeyboardButton(text="◀️ Назад", callback_data="admin_back")])
+    await _safe_edit_text(callback, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
+    await _safe_callback_answer(callback)
 
 
 @router.callback_query(F.data == "keywords_add")
@@ -1087,11 +1090,30 @@ async def add_keywords_process(message: Message, state: FSMContext):
                         added_count += 1
         conn.close()
         
-        await message.answer(f"✅ Добавлено {count} ключевых слов, {added_count} добавлено в категорию!")
         await state.clear()
-        # Отправляем кнопку для возврата в меню ключевых слов категории
-        keyboard = [[InlineKeyboardButton(text="◀️ Вернуться в меню ключевых слов", callback_data=f"cat_keywords_{category_id}")]]
-        await message.answer("Выберите действие:", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
+        
+        # Сразу открываем меню ключевых слов категории
+        category = db.get_category(category_id)
+        if category:
+            keywords = db.get_category_keywords(category_id)
+            
+            text = f"🔑 <b>Ключевые слова: {category['name']}</b>\n\n"
+            text += f"Добавлено: {len(keywords)}\n\n"
+            
+            if keywords:
+                text += "<b>Текущие ключевые слова:</b>\n"
+                for kw in keywords[:20]:
+                    text += f"• {kw}\n"
+            
+            keyboard = []
+            keyboard.append([InlineKeyboardButton(text="➕ Добавить новое", callback_data=f"cat_keyword_add_new_{category_id}")])
+            
+            if keywords:
+                keyboard.append([InlineKeyboardButton(text="🗑 Удалить", callback_data=f"cat_keyword_remove_{category_id}")])
+            
+            keyboard.append([InlineKeyboardButton(text="◀️ Назад", callback_data=f"category_menu_{category_id}")])
+            
+            await message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard), parse_mode="HTML")
     else:
         await message.answer(f"✅ Добавлено {count} ключевых слов!")
         await state.clear()
@@ -1103,7 +1125,8 @@ async def delete_keywords_start(callback: CallbackQuery):
     """Начать удаление ключевых слов"""
     keywords = db.get_all_keywords_with_ids()
     if not keywords:
-        await callback.answer("Нет ключевых слов", show_alert=True)
+        # Если нет ключевых слов, возвращаемся в меню (кнопка удаления уже будет скрыта)
+        await show_keywords(callback)
         return
 
     keyboard = []
@@ -1116,8 +1139,8 @@ async def delete_keywords_start(callback: CallbackQuery):
         ])
 
     keyboard.append([InlineKeyboardButton(text="◀️ Назад", callback_data="admin_keywords")])
-    await callback.message.edit_text("Выберите ключевое слово для удаления:", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
-    await callback.answer()
+    await _safe_edit_text(callback, "Выберите ключевое слово для удаления:", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
+    await _safe_callback_answer(callback)
 
 
 @router.callback_query(F.data.startswith("keyword_delete_"))
@@ -1129,9 +1152,29 @@ async def delete_keyword(callback: CallbackQuery):
         await _safe_callback_answer(callback, "Некорректный ID", show_alert=True)
         return
     
-    db.delete_keywords([keyword_id])
-    await _safe_callback_answer(callback, "Удалено", show_alert=True)
-    await show_keywords(callback)
+    deleted_count = db.delete_keywords([keyword_id])
+    if deleted_count > 0:
+        # Сначала отвечаем на callback, чтобы убрать часики
+        await _safe_callback_answer(callback, "✅ Удалено")
+        # Обновляем список удаления или возвращаемся в главное меню
+        keywords = db.get_all_keywords_with_ids()
+        if not keywords:
+            # Если больше нет ключевых слов, возвращаемся в главное меню
+            await show_keywords(callback)
+        else:
+            # Обновляем список для удаления
+            keyboard = []
+            for kw in keywords[:20]:
+                keyboard.append([
+                    InlineKeyboardButton(
+                        text=f"🗑 {kw['word']}",
+                        callback_data=f"keyword_delete_{kw['id']}"
+                    )
+                ])
+            keyboard.append([InlineKeyboardButton(text="◀️ Назад", callback_data="admin_keywords")])
+            await _safe_edit_text(callback, "Выберите ключевое слово для удаления:", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
+    else:
+        await _safe_callback_answer(callback, "❌ Ключевое слово не найдено или уже удалено", show_alert=True)
 
 
 # ========== СТОП-СЛОВА ==========
@@ -1143,11 +1186,13 @@ async def show_stopwords(callback: CallbackQuery):
 
     keyboard = [
         [InlineKeyboardButton(text="➕ Добавить", callback_data="stopwords_add")],
-        [InlineKeyboardButton(text="🗑 Удалить", callback_data="stopwords_delete")],
-        [InlineKeyboardButton(text="◀️ Назад", callback_data="admin_back")],
     ]
-    await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
-    await callback.answer()
+    # Показываем кнопку "🗑 Удалить" только если есть стоп-слова
+    if stopwords:
+        keyboard.append([InlineKeyboardButton(text="🗑 Удалить", callback_data="stopwords_delete")])
+    keyboard.append([InlineKeyboardButton(text="◀️ Назад", callback_data="admin_back")])
+    await _safe_edit_text(callback, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
+    await _safe_callback_answer(callback)
 
 
 @router.callback_query(F.data == "stopwords_add")
@@ -1195,11 +1240,30 @@ async def add_stopwords_process(message: Message, state: FSMContext):
                         added_count += 1
         conn.close()
         
-        await message.answer(f"✅ Добавлено {count} стоп-слов, {added_count} добавлено в категорию!")
         await state.clear()
-        # Отправляем кнопку для возврата в меню стоп-слов категории
-        keyboard = [[InlineKeyboardButton(text="◀️ Вернуться в меню стоп-слов", callback_data=f"cat_stopwords_{category_id}")]]
-        await message.answer("Выберите действие:", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
+        
+        # Сразу открываем меню стоп-слов категории
+        category = db.get_category(category_id)
+        if category:
+            stopwords = db.get_category_stopwords(category_id)
+            
+            text = f"🛑 <b>Стоп-слова: {category['name']}</b>\n\n"
+            text += f"Добавлено: {len(stopwords)}\n\n"
+            
+            if stopwords:
+                text += "<b>Текущие стоп-слова:</b>\n"
+                for sw in stopwords[:20]:
+                    text += f"• {sw}\n"
+            
+            keyboard = []
+            keyboard.append([InlineKeyboardButton(text="➕ Добавить новое", callback_data=f"cat_stopword_add_new_{category_id}")])
+            
+            if stopwords:
+                keyboard.append([InlineKeyboardButton(text="🗑 Удалить", callback_data=f"cat_stopword_remove_{category_id}")])
+            
+            keyboard.append([InlineKeyboardButton(text="◀️ Назад", callback_data=f"category_menu_{category_id}")])
+            
+            await message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard), parse_mode="HTML")
     else:
         await message.answer(f"✅ Добавлено {count} стоп-слов!")
         await state.clear()
@@ -1211,7 +1275,8 @@ async def delete_stopwords_start(callback: CallbackQuery):
     """Начать удаление стоп-слов"""
     stopwords = db.get_all_stopwords_with_ids()
     if not stopwords:
-        await callback.answer("Нет стоп-слов", show_alert=True)
+        # Если нет стоп-слов, возвращаемся в меню (кнопка удаления уже будет скрыта)
+        await show_stopwords(callback)
         return
 
     keyboard = []
@@ -1224,8 +1289,8 @@ async def delete_stopwords_start(callback: CallbackQuery):
         ])
 
     keyboard.append([InlineKeyboardButton(text="◀️ Назад", callback_data="admin_stopwords")])
-    await callback.message.edit_text("Выберите стоп-слово для удаления:", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
-    await callback.answer()
+    await _safe_edit_text(callback, "Выберите стоп-слово для удаления:", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
+    await _safe_callback_answer(callback)
 
 
 @router.callback_query(F.data.startswith("stopword_delete_"))
@@ -1237,9 +1302,29 @@ async def delete_stopword(callback: CallbackQuery):
         await _safe_callback_answer(callback, "Некорректный ID", show_alert=True)
         return
     
-    db.delete_stopwords([stopword_id])
-    await _safe_callback_answer(callback, "Удалено", show_alert=True)
-    await show_stopwords(callback)
+    deleted_count = db.delete_stopwords([stopword_id])
+    if deleted_count > 0:
+        # Сначала отвечаем на callback, чтобы убрать часики
+        await _safe_callback_answer(callback, "✅ Удалено")
+        # Обновляем список удаления или возвращаемся в главное меню
+        stopwords = db.get_all_stopwords_with_ids()
+        if not stopwords:
+            # Если больше нет стоп-слов, возвращаемся в главное меню
+            await show_stopwords(callback)
+        else:
+            # Обновляем список для удаления
+            keyboard = []
+            for sw in stopwords[:20]:
+                keyboard.append([
+                    InlineKeyboardButton(
+                        text=f"🗑 {sw['word']}",
+                        callback_data=f"stopword_delete_{sw['id']}"
+                    )
+                ])
+            keyboard.append([InlineKeyboardButton(text="◀️ Назад", callback_data="admin_stopwords")])
+            await _safe_edit_text(callback, "Выберите стоп-слово для удаления:", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
+    else:
+        await _safe_callback_answer(callback, "❌ Стоп-слово не найдено или уже удалено", show_alert=True)
 
 
 # ========== ШАБЛОНЫ ==========
@@ -1312,8 +1397,8 @@ async def show_accounts(callback: CallbackQuery, state: FSMContext):
         [InlineKeyboardButton(text="🗑 Удалить", callback_data="account_delete")],
         [InlineKeyboardButton(text="◀️ Назад", callback_data="admin_back")],
     ])
-    await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
-    await callback.answer()
+    await _safe_edit_text(callback, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
+    await _safe_callback_answer(callback)
 
 
 @router.callback_query(F.data == "account_add_simple")
@@ -2611,7 +2696,7 @@ async def add_category_channel(message: Message, state: FSMContext):
     )
 
 
-@router.callback_query(F.data.startswith("category_edit_"))
+@router.callback_query(F.data.startswith("category_edit_") & ~F.data.startswith("category_edit_message_") & ~F.data.startswith("category_edit_name_") & ~F.data.startswith("category_edit_session_") & ~F.data.startswith("category_edit_channel_"))
 async def edit_category(callback: CallbackQuery, state: FSMContext):
     """Начать редактирование категории"""
     try:
@@ -2635,9 +2720,10 @@ async def edit_category(callback: CallbackQuery, state: FSMContext):
     
     keyboard = [
         [InlineKeyboardButton(text="📝 Название", callback_data=f"category_edit_name_{category_id}")],
+        [InlineKeyboardButton(text="💬 Текст сообщения", callback_data=f"category_edit_message_{category_id}")],
         [InlineKeyboardButton(text="👤 Userbot", callback_data=f"category_edit_session_{category_id}")],
         [InlineKeyboardButton(text="📢 Канал менеджеров", callback_data=f"category_edit_channel_{category_id}")],
-        [InlineKeyboardButton(text="◀️ Назад", callback_data=f"category_view_{category_id}")]
+        [InlineKeyboardButton(text="◀️ Назад", callback_data=f"category_menu_{category_id}")]
     ]
     
     await _safe_callback_answer(callback)
@@ -2646,6 +2732,7 @@ async def edit_category(callback: CallbackQuery, state: FSMContext):
 
 class EditCategoryStates(StatesGroup):
     waiting_for_name = State()
+    waiting_for_message_text = State()
     waiting_for_session_name = State()
     waiting_for_channel_id = State()
 
@@ -2700,6 +2787,85 @@ async def edit_category_name_process(message: Message, state: FSMContext):
     
     await state.clear()
     await message.answer("Выберите раздел:", reply_markup=get_main_menu(message.from_user.id))
+
+
+@router.callback_query(F.data.startswith("category_edit_message_"))
+async def edit_category_message_start(callback: CallbackQuery, state: FSMContext):
+    """Начать редактирование текста сообщения категории"""
+    try:
+        category_id = int(callback.data.split("_")[-1])
+    except Exception as e:
+        await _safe_callback_answer(callback, "Некорректный ID", show_alert=True)
+        print(f"Error parsing category_id: {e}")
+        return
+    
+    category = db.get_category(category_id)
+    if not category:
+        await _safe_callback_answer(callback, "Категория не найдена", show_alert=True)
+        return
+    
+    try:
+        await state.set_state(EditCategoryStates.waiting_for_message_text)
+        await state.update_data(category_id=category_id)
+        
+        current_text = category.get('message_text') or db.get_active_template()
+        
+        keyboard = [[InlineKeyboardButton(text="❌ Отмена", callback_data=f"category_menu_{category_id}")]]
+        
+        await _safe_callback_answer(callback)
+        await _safe_edit_text(
+            callback,
+            f"✏️ <b>Редактирование текста сообщения</b>\n\n"
+            f"Текущий текст:\n<i>{current_text[:500]}</i>\n\n"
+            f"Отправьте новый текст сообщения (или отправьте 'удалить' чтобы использовать глобальный шаблон):",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard),
+            parse_mode="HTML"
+        )
+    except Exception as e:
+        print(f"Error in edit_category_message_start: {e}")
+        await _safe_callback_answer(callback, f"Ошибка: {str(e)}", show_alert=True)
+
+
+@router.message(EditCategoryStates.waiting_for_message_text)
+async def edit_category_message_process(message: Message, state: FSMContext):
+    """Обработать новый текст сообщения категории"""
+    text = message.text.strip()
+    data = await state.get_data()
+    category_id = data.get('category_id')
+    
+    if not category_id:
+        await message.answer("❌ Ошибка: категория не найдена.")
+        await state.clear()
+        return
+    
+    # Если пользователь отправил "удалить", очищаем message_text
+    if text.lower() in ['удалить', 'delete', 'очистить', 'clear']:
+        success = db.update_category(category_id, {'message_text': None})
+        if success:
+            await message.answer("✅ Текст сообщения удален. Будет использоваться глобальный шаблон.")
+        else:
+            await message.answer("❌ Ошибка при удалении текста сообщения.")
+    else:
+        if not text:
+            await message.answer("❌ Текст сообщения не может быть пустым. Попробуйте снова:")
+            return
+        
+        success = db.update_category(category_id, {'message_text': text})
+        if success:
+            await message.answer("✅ Текст сообщения обновлен!")
+        else:
+            await message.answer("❌ Ошибка при обновлении текста сообщения.")
+    
+    await state.clear()
+    
+    # Возвращаемся в меню категории
+    category = db.get_category(category_id)
+    if category:
+        text = f"📁 <b>{category['name']}</b>\n\n"
+        text += "Текст сообщения успешно обновлен!"
+        await message.answer(text, reply_markup=get_category_menu(category_id, message.from_user.id), parse_mode="HTML")
+    else:
+        await message.answer("Выберите раздел:", reply_markup=get_main_menu(message.from_user.id))
 
 
 @router.callback_query(F.data.startswith("category_edit_session_"))
@@ -3206,11 +3372,11 @@ async def remove_keyword_from_category_execute(callback: CallbackQuery):
         await _safe_callback_answer(callback, "Некорректные параметры", show_alert=True)
         return
     
-    success = db.remove_category_keyword(category_id, keyword_id)
-    if success:
-        await _safe_callback_answer(callback, "✅ Ключевое слово удалено", show_alert=True)
+    deleted_count = db.remove_category_keyword(category_id, keyword_id)
+    if deleted_count > 0:
+        await _safe_callback_answer(callback, "✅ Ключевое слово удалено")
     else:
-        await _safe_callback_answer(callback, "❌ Ошибка", show_alert=True)
+        await _safe_callback_answer(callback, "❌ Слово не найдено или уже удалено", show_alert=True)
     
     await manage_category_keywords(callback)
 
@@ -3343,11 +3509,11 @@ async def remove_stopword_from_category_execute(callback: CallbackQuery):
         await _safe_callback_answer(callback, "Некорректные параметры", show_alert=True)
         return
     
-    success = db.remove_category_stopword(category_id, stopword_id)
-    if success:
-        await _safe_callback_answer(callback, "✅ Стоп-слово удалено", show_alert=True)
+    deleted_count = db.remove_category_stopword(category_id, stopword_id)
+    if deleted_count > 0:
+        await _safe_callback_answer(callback, "✅ Стоп-слово удалено")
     else:
-        await _safe_callback_answer(callback, "❌ Ошибка", show_alert=True)
+        await _safe_callback_answer(callback, "❌ Слово не найдено или уже удалено", show_alert=True)
     
     await manage_category_stopwords(callback)
 

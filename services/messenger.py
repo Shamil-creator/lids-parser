@@ -25,25 +25,39 @@ class Messenger:
         self.session_name = session_name
         self.category_id = category_id
         self.parser = parser  # Парсер для определения категории по ключевым словам
-        self.template = db.get_active_template()
+        self.template = self._get_template()
         self.follow_up_timers = {}  # Таймеры дожимающих сообщений
+
+    def _get_template(self) -> str:
+        """Получить шаблон сообщения (приоритет: категория > глобальный)"""
+        if self.category_id:
+            category_text = db.get_category_message_text(self.category_id)
+            if category_text:
+                return category_text
+        return db.get_active_template()
 
     def refresh_template(self):
         """Обновить шаблон из БД"""
-        self.template = db.get_active_template()
+        self.template = self._get_template()
 
     async def send_first_message(self, user_id: int, username: str = "", channel_source: str = "", original_post_text: str = "", force_repeat: bool = False) -> bool:
         """Отправить первое сообщение пользователю"""
         try:
             # Проверка на дубликаты (если не принудительный повтор)
+            # Проверяем, не запущен ли уже таймер дожима (значит сообщение уже отправлялось)
+            if not force_repeat and user_id in self.follow_up_timers:
+                return False
+            
+            # Проверяем, не ответил ли пользователь уже (помечен как обработанный)
             if not force_repeat and db.is_user_processed(user_id):
                 return False
 
             # Отправка сообщения
             await self.client.send_message(user_id, self.template)
 
-            # Пометка как обработанного (обновляет timestamp при повторной отправке)
-            db.mark_user_processed(user_id, username, channel_source, original_post_text)
+            # НЕ помечаем пользователя как обработанного при отправке первого сообщения
+            # Пользователь будет помечен как обработанный только при ответе
+            # Это нужно для того, чтобы через 4 часа отправить повторное сообщение, если пользователь не ответил
 
             # Запуск таймера дожима
             await self.schedule_follow_up(user_id)
@@ -67,7 +81,8 @@ class Messenger:
     async def schedule_follow_up(self, user_id: int):
         """Запланировать дожимающее сообщение"""
         async def follow_up_task():
-            await asyncio.sleep(config.FOLLOW_UP_DELAY_HOURS * 3600)
+            # Используем задержку в минутах из конфига
+            await asyncio.sleep(config.FOLLOW_UP_DELAY_MINUTES * 60)
             # Проверка ответа пользователя
             if not db.is_user_processed(user_id):
                 try:
@@ -130,6 +145,16 @@ class Messenger:
         await self.forward_message_to_managers(message, source_channel, original_post_text, parser=self.parser)
         print(f"[{self.session_name}] ✅ Сообщение переслано в канал менеджеров")
 
+        # Помечаем пользователя как обработанного (он ответил)
+        db.mark_user_processed(user_id, username, source_channel, original_post_text)
+        print(f"[{self.session_name}] ✅ Пользователь помечен как обработанный (ответил)")
+        
+        # Отмена дожимающего сообщения (пользователь ответил)
+        if user_id in self.follow_up_timers:
+            self.follow_up_timers[user_id].cancel()
+            del self.follow_up_timers[user_id]
+            print(f"[{self.session_name}] ⏹️ Дожимающее сообщение отменено (пользователь ответил)")
+        
         # Проверка на телефон
         has_phone = self.has_phone_or_digits(text)
         print(f"[{self.session_name}] Проверка на телефон: {has_phone}")
@@ -141,12 +166,6 @@ class Messenger:
             # Сохранение лида
             db.add_lead(user_id, username, phone, source_channel, original_post_text)
             print(f"[{self.session_name}] ✅ Лид сохранен в БД")
-
-            # Отмена дожимающего сообщения
-            if user_id in self.follow_up_timers:
-                self.follow_up_timers[user_id].cancel()
-                del self.follow_up_timers[user_id]
-                print(f"[{self.session_name}] ⏹️ Дожимающее сообщение отменено")
         
         print(f"[{self.session_name}] ✅ process_incoming_message: обработка завершена")
 

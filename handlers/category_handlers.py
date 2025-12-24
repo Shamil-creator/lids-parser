@@ -722,7 +722,6 @@ async def category_keywords_menu(callback: CallbackQuery):
         return
     
     keywords = db.get_category_keywords(category_id)
-    all_keywords = db.get_all_keywords_with_ids()
     
     text = f"🔑 <b>Ключевые слова: {category['name']}</b>\n\n"
     text += f"Добавлено: {len(keywords)}\n\n"
@@ -734,25 +733,8 @@ async def category_keywords_menu(callback: CallbackQuery):
     
     keyboard = []
     
-    # Кнопка для добавления нового ключевого слова (всегда первой, чтобы была видна)
+    # Кнопка для добавления нового ключевого слова
     keyboard.append([InlineKeyboardButton(text="➕ Добавить новое", callback_data=f"cat_keyword_add_new_{category_id}")])
-    
-    # Получаем ID ключевых слов категории
-    conn = db.get_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT keyword_id FROM category_keywords WHERE category_id = ?", (category_id,))
-    category_keyword_ids = {row[0] for row in cursor.fetchall()}
-    conn.close()
-    
-    # Кнопки для добавления существующих ключевых слов (ограничиваем до 20 для удобства)
-    available_keywords = [kw for kw in all_keywords if kw['id'] not in category_keyword_ids]
-    for kw in available_keywords[:20]:  # Показываем только первые 20
-        keyboard.append([
-            InlineKeyboardButton(
-                text=f"➕ {kw['word']}",
-                callback_data=f"cat_keyword_add_{category_id}_{kw['id']}"
-            )
-        ])
     
     if keywords:
         keyboard.append([InlineKeyboardButton(text="🗑 Удалить", callback_data=f"cat_keyword_remove_{category_id}")])
@@ -819,7 +801,7 @@ async def category_keyword_add(callback: CallbackQuery):
     await category_keywords_menu(callback)
 
 
-@router.callback_query(F.data.startswith("cat_keyword_remove_"))
+@router.callback_query(F.data.startswith("cat_keyword_remove_") & ~F.data.startswith("cat_keyword_remove_exec_"))
 async def category_keyword_remove(callback: CallbackQuery):
     """Удалить ключевое слово из категории"""
     try:
@@ -855,10 +837,13 @@ async def category_keyword_remove(callback: CallbackQuery):
     
     keyboard.append([InlineKeyboardButton(text="◀️ Назад", callback_data=f"cat_keywords_{category_id}")])
     
+    category = db.get_category(category_id)
+    category_name = category['name'] if category else f"ID {category_id}"
+    
     await _safe_callback_answer(callback)
     await _safe_edit_text(
         callback,
-        "🗑 <b>Удаление ключевого слова</b>\n\nВыберите ключевое слово:",
+        f"🗑 <b>Удаление ключевого слова</b>\n\nКатегория: <b>{category_name}</b>\n\nВыберите ключевое слово для удаления:",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard),
         parse_mode="HTML"
     )
@@ -881,7 +866,56 @@ async def category_keyword_remove_execute(callback: CallbackQuery):
     else:
         await _safe_callback_answer(callback, "❌ Ошибка", show_alert=True)
     
-    await category_keywords_menu(callback)
+    # Проверяем, остались ли еще ключевые слова
+    keywords = db.get_category_keywords(category_id)
+    if keywords:
+        # Если есть еще слова, остаемся в меню удаления - показываем обновленный список
+        conn = db.get_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT k.id, k.word FROM keywords k
+            INNER JOIN category_keywords ck ON k.id = ck.keyword_id
+            WHERE ck.category_id = ?
+        """, (category_id,))
+        keywords_with_ids = [dict(row) for row in cursor.fetchall()]
+        conn.close()
+        
+        keyboard = []
+        for kw in keywords_with_ids[:20]:
+            keyboard.append([
+                InlineKeyboardButton(
+                    text=f"🗑 {kw['word']}",
+                    callback_data=f"cat_keyword_remove_exec_{category_id}_{kw['id']}"
+                )
+            ])
+        
+        keyboard.append([InlineKeyboardButton(text="◀️ Назад", callback_data=f"cat_keywords_{category_id}")])
+        
+        category = db.get_category(category_id)
+        category_name = category['name'] if category else f"ID {category_id}"
+        
+        await _safe_edit_text(
+            callback,
+            f"🗑 <b>Удаление ключевого слова</b>\n\nКатегория: <b>{category_name}</b>\n\nВыберите ключевое слово для удаления:",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard),
+            parse_mode="HTML"
+        )
+    else:
+        # Если слов не осталось, возвращаемся в главное меню
+        category = db.get_category(category_id)
+        if not category:
+            await _safe_callback_answer(callback, "Категория не найдена", show_alert=True)
+            return
+        
+        text = f"🔑 <b>Ключевые слова: {category['name']}</b>\n\n"
+        text += f"Добавлено: 0\n\n"
+        
+        keyboard = [
+            [InlineKeyboardButton(text="➕ Добавить новое", callback_data=f"cat_keyword_add_new_{category_id}")],
+            [InlineKeyboardButton(text="◀️ Назад", callback_data=f"category_menu_{category_id}")]
+        ]
+        
+        await _safe_edit_text(callback, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard), parse_mode="HTML")
 
 
 # Стоп-слова категории
@@ -907,7 +941,6 @@ async def category_stopwords_menu(callback: CallbackQuery):
         return
     
     stopwords = db.get_category_stopwords(category_id)
-    all_stopwords = db.get_all_stopwords_with_ids()
     
     text = f"🛑 <b>Стоп-слова: {category['name']}</b>\n\n"
     text += f"Добавлено: {len(stopwords)}\n\n"
@@ -919,25 +952,8 @@ async def category_stopwords_menu(callback: CallbackQuery):
     
     keyboard = []
     
-    # Кнопка для добавления нового стоп-слова (всегда первой, чтобы была видна)
+    # Кнопка для добавления нового стоп-слова
     keyboard.append([InlineKeyboardButton(text="➕ Добавить новое", callback_data=f"cat_stopword_add_new_{category_id}")])
-    
-    # Получаем ID стоп-слов категории
-    conn = db.get_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT stopword_id FROM category_stopwords WHERE category_id = ?", (category_id,))
-    category_stopword_ids = {row[0] for row in cursor.fetchall()}
-    conn.close()
-    
-    # Кнопки для добавления существующих стоп-слов (ограничиваем до 20 для удобства)
-    available_stopwords = [sw for sw in all_stopwords if sw['id'] not in category_stopword_ids]
-    for sw in available_stopwords[:20]:  # Показываем только первые 20
-        keyboard.append([
-            InlineKeyboardButton(
-                text=f"➕ {sw['word']}",
-                callback_data=f"cat_stopword_add_{category_id}_{sw['id']}"
-            )
-        ])
     
     if stopwords:
         keyboard.append([InlineKeyboardButton(text="🗑 Удалить", callback_data=f"cat_stopword_remove_{category_id}")])
@@ -1004,7 +1020,7 @@ async def category_stopword_add(callback: CallbackQuery):
     await category_stopwords_menu(callback)
 
 
-@router.callback_query(F.data.startswith("cat_stopword_remove_"))
+@router.callback_query(F.data.startswith("cat_stopword_remove_") & ~F.data.startswith("cat_stopword_remove_exec_"))
 async def category_stopword_remove(callback: CallbackQuery):
     """Удалить стоп-слово из категории"""
     try:
@@ -1040,10 +1056,13 @@ async def category_stopword_remove(callback: CallbackQuery):
     
     keyboard.append([InlineKeyboardButton(text="◀️ Назад", callback_data=f"cat_stopwords_{category_id}")])
     
+    category = db.get_category(category_id)
+    category_name = category['name'] if category else f"ID {category_id}"
+    
     await _safe_callback_answer(callback)
     await _safe_edit_text(
         callback,
-        "🗑 <b>Удаление стоп-слова</b>\n\nВыберите стоп-слово:",
+        f"🗑 <b>Удаление стоп-слова</b>\n\nКатегория: <b>{category_name}</b>\n\nВыберите стоп-слово для удаления:",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard),
         parse_mode="HTML"
     )
@@ -1066,5 +1085,54 @@ async def category_stopword_remove_execute(callback: CallbackQuery):
     else:
         await _safe_callback_answer(callback, "❌ Ошибка", show_alert=True)
     
-    await category_stopwords_menu(callback)
+    # Проверяем, остались ли еще стоп-слова
+    stopwords = db.get_category_stopwords(category_id)
+    if stopwords:
+        # Если есть еще слова, остаемся в меню удаления - показываем обновленный список
+        conn = db.get_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT s.id, s.word FROM stopwords s
+            INNER JOIN category_stopwords cs ON s.id = cs.stopword_id
+            WHERE cs.category_id = ?
+        """, (category_id,))
+        stopwords_with_ids = [dict(row) for row in cursor.fetchall()]
+        conn.close()
+        
+        keyboard = []
+        for sw in stopwords_with_ids[:20]:
+            keyboard.append([
+                InlineKeyboardButton(
+                    text=f"🗑 {sw['word']}",
+                    callback_data=f"cat_stopword_remove_exec_{category_id}_{sw['id']}"
+                )
+            ])
+        
+        keyboard.append([InlineKeyboardButton(text="◀️ Назад", callback_data=f"cat_stopwords_{category_id}")])
+        
+        category = db.get_category(category_id)
+        category_name = category['name'] if category else f"ID {category_id}"
+        
+        await _safe_edit_text(
+            callback,
+            f"🗑 <b>Удаление стоп-слова</b>\n\nКатегория: <b>{category_name}</b>\n\nВыберите стоп-слово для удаления:",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard),
+            parse_mode="HTML"
+        )
+    else:
+        # Если слов не осталось, возвращаемся в главное меню
+        category = db.get_category(category_id)
+        if not category:
+            await _safe_callback_answer(callback, "Категория не найдена", show_alert=True)
+            return
+        
+        text = f"🛑 <b>Стоп-слова: {category['name']}</b>\n\n"
+        text += f"Добавлено: 0\n\n"
+        
+        keyboard = [
+            [InlineKeyboardButton(text="➕ Добавить новое", callback_data=f"cat_stopword_add_new_{category_id}")],
+            [InlineKeyboardButton(text="◀️ Назад", callback_data=f"category_menu_{category_id}")]
+        ]
+        
+        await _safe_edit_text(callback, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard), parse_mode="HTML")
 
