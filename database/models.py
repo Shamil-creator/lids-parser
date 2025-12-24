@@ -176,11 +176,19 @@ class Database:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT UNIQUE NOT NULL,
                 managers_channel_id INTEGER,
+                message_text TEXT,
                 is_active INTEGER DEFAULT 1,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
+        
+        # Миграция: добавляем message_text если его нет
+        try:
+            cursor.execute("ALTER TABLE categories ADD COLUMN message_text TEXT")
+        except sqlite3.OperationalError:
+            # Колонка уже существует
+            pass
         
         # Миграция: удаляем assigned_session_name если он есть (старая структура)
         try:
@@ -762,19 +770,22 @@ class Database:
         conn.close()
         return [row[0] for row in rows]
 
-    def delete_keywords(self, keyword_ids: List[int]) -> bool:
-        """Удалить ключевые слова"""
+    def delete_keywords(self, keyword_ids: List[int]) -> int:
+        """Удалить ключевые слова. Возвращает количество удалённых строк."""
+        if not keyword_ids:
+            return 0
         try:
             conn = self.get_connection()
             cursor = conn.cursor()
             placeholders = ','.join('?' * len(keyword_ids))
             cursor.execute(f"DELETE FROM keywords WHERE id IN ({placeholders})", keyword_ids)
+            deleted_count = cursor.rowcount
             conn.commit()
             conn.close()
-            return True
+            return deleted_count
         except Exception as e:
             print(f"Error deleting keywords: {e}")
-            return False
+            return 0
 
     def get_all_keywords_with_ids(self) -> List[dict]:
         """Получить все ключевые слова с ID"""
@@ -812,19 +823,22 @@ class Database:
         conn.close()
         return [row[0] for row in rows]
 
-    def delete_stopwords(self, stopword_ids: List[int]) -> bool:
-        """Удалить стоп-слова"""
+    def delete_stopwords(self, stopword_ids: List[int]) -> int:
+        """Удалить стоп-слова. Возвращает количество удалённых строк."""
+        if not stopword_ids:
+            return 0
         try:
             conn = self.get_connection()
             cursor = conn.cursor()
             placeholders = ','.join('?' * len(stopword_ids))
             cursor.execute(f"DELETE FROM stopwords WHERE id IN ({placeholders})", stopword_ids)
+            deleted_count = cursor.rowcount
             conn.commit()
             conn.close()
-            return True
+            return deleted_count
         except Exception as e:
             print(f"Error deleting stopwords: {e}")
-            return False
+            return 0
 
     def get_all_stopwords_with_ids(self) -> List[dict]:
         """Получить все стоп-слова с ID"""
@@ -1072,6 +1086,13 @@ class Database:
         row = cursor.fetchone()
         conn.close()
         return dict(row) if row else None
+    
+    def get_category_message_text(self, category_id: int) -> Optional[str]:
+        """Получить текст сообщения категории (или None если используется глобальный шаблон)"""
+        category = self.get_category(category_id)
+        if category and category.get('message_text'):
+            return category['message_text']
+        return None
 
     def get_all_categories(self) -> List[dict]:
         """Получить все категории"""
@@ -1261,8 +1282,8 @@ class Database:
             print(f"Error adding keyword to category: {e}")
             return False
 
-    def remove_category_keyword(self, category_id: int, keyword_id: int) -> bool:
-        """Удалить ключевое слово из категории"""
+    def remove_category_keyword(self, category_id: int, keyword_id: int) -> int:
+        """Удалить ключевое слово из категории. Возвращает количество удалённых строк."""
         try:
             conn = self.get_connection()
             cursor = conn.cursor()
@@ -1270,12 +1291,13 @@ class Database:
                 DELETE FROM category_keywords
                 WHERE category_id = ? AND keyword_id = ?
             """, (category_id, keyword_id))
+            deleted_count = cursor.rowcount
             conn.commit()
             conn.close()
-            return True
+            return deleted_count
         except Exception as e:
             print(f"Error removing keyword from category: {e}")
-            return False
+            return 0
 
     def get_category_stopwords(self, category_id: int) -> List[str]:
         """Получить стоп-слова категории"""
@@ -1306,8 +1328,8 @@ class Database:
             print(f"Error adding stopword to category: {e}")
             return False
 
-    def remove_category_stopword(self, category_id: int, stopword_id: int) -> bool:
-        """Удалить стоп-слово из категории"""
+    def remove_category_stopword(self, category_id: int, stopword_id: int) -> int:
+        """Удалить стоп-слово из категории. Возвращает количество удалённых строк."""
         try:
             conn = self.get_connection()
             cursor = conn.cursor()
@@ -1315,12 +1337,13 @@ class Database:
                 DELETE FROM category_stopwords
                 WHERE category_id = ? AND stopword_id = ?
             """, (category_id, stopword_id))
+            deleted_count = cursor.rowcount
             conn.commit()
             conn.close()
-            return True
+            return deleted_count
         except Exception as e:
             print(f"Error removing stopword from category: {e}")
-            return False
+            return 0
 
     # ========== USERBOT'Ы КАТЕГОРИЙ (многие-ко-многим) ==========
     def get_category_userbots(self, category_id: int) -> List[str]:
