@@ -1285,11 +1285,87 @@ async def add_account_simple_phone(message: Message, state: FSMContext):
         )
         await state.set_state(AddAccountStates.waiting_for_code)
         keyboard = [[InlineKeyboardButton(text="❌ Отмена", callback_data="admin_accounts")]]
-        await message.answer("✅ Код отправлен!\n\nОтправьте код подтверждения из Telegram:", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
+        await message.answer(
+            "✅ <b>Код отправлен!</b>\n\n"
+            "Отправьте код подтверждения из Telegram.\n\n"
+            "💡 <i>Можно вводить код с пробелами или дефисами (например: 12345, 123 45, 12-34-5)</i>",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard),
+            parse_mode="HTML"
+        )
         await client.disconnect()
         
     except Exception as e:
         await message.answer(f"❌ Ошибка: {e}")
+
+
+@router.callback_query(F.data == "account_resend_code")
+async def resend_code(callback: CallbackQuery, state: FSMContext):
+    """Перезапросить код подтверждения"""
+    data = await state.get_data()
+    
+    # Проверяем, что есть необходимые данные
+    if not data.get('phone') or not data.get('api_id') or not data.get('api_hash'):
+        await callback.answer("❌ Данные сессии утеряны. Начните добавление аккаунта заново.", show_alert=True)
+        await state.clear()
+        return
+    
+    phone = data['phone']
+    api_id = data['api_id']
+    api_hash = data['api_hash']
+    session_name = data.get('session_name', f"temp_{callback.from_user.id}")
+    
+    client = None
+    try:
+        await callback.answer("Отправка нового кода...")
+        
+        client = Client(
+            name=session_name,
+            workdir=config.SESSIONS_DIR,
+            api_id=api_id,
+            api_hash=api_hash
+        )
+        
+        await client.connect()
+        sent_code = await client.send_code(phone)
+        
+        # Обновляем phone_code_hash в state
+        await state.update_data(phone_code_hash=sent_code.phone_code_hash)
+        await state.set_state(AddAccountStates.waiting_for_code)
+        
+        await client.disconnect()
+        
+        category_id = data.get('category_id')
+        if category_id:
+            keyboard = [
+                [InlineKeyboardButton(text="❌ Отмена", callback_data=f"cat_userbot_{category_id}")]
+            ]
+        else:
+            keyboard = [
+                [InlineKeyboardButton(text="❌ Отмена", callback_data="admin_accounts")]
+            ]
+        
+        await callback.message.edit_text(
+            "✅ <b>Новый код отправлен!</b>\n\n"
+            "Отправьте код подтверждения из Telegram.\n\n"
+            "💡 <i>Можно вводить код с пробелами или дефисами (например: 12345, 123 45, 12-34-5)</i>",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard),
+            parse_mode="HTML"
+        )
+        
+    except Exception as e:
+        if client:
+            try:
+                await client.disconnect()
+            except:
+                pass
+        
+        await callback.answer(f"❌ Ошибка при отправке кода: {e}", show_alert=True)
+        await callback.message.edit_text(
+            f"❌ <b>Ошибка при отправке кода</b>\n\n"
+            f"<i>{e}</i>\n\n"
+            "Попробуйте начать процесс добавления аккаунта заново.",
+            parse_mode="HTML"
+        )
 
 
 @router.callback_query(F.data == "account_add")
@@ -1671,7 +1747,13 @@ async def add_account_phone(message: Message, state: FSMContext):
         )
         await state.set_state(AddAccountStates.waiting_for_code)
         keyboard = [[InlineKeyboardButton(text="❌ Отмена", callback_data="admin_accounts")]]
-        await message.answer("Отправьте код подтверждения из Telegram:", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
+        await message.answer(
+            "✅ <b>Код отправлен!</b>\n\n"
+            "Отправьте код подтверждения из Telegram.\n\n"
+            "💡 <i>Можно вводить код с пробелами или дефисами (например: 12345, 123 45, 12-34-5)</i>",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard),
+            parse_mode="HTML"
+        )
         await client.disconnect()
 
     except Exception as e:
@@ -1681,7 +1763,12 @@ async def add_account_phone(message: Message, state: FSMContext):
 @router.message(AddAccountStates.waiting_for_code)
 async def add_account_code(message: Message, state: FSMContext):
     """Получить код подтверждения"""
-    code = message.text.strip()
+    # Очищаем код от пробелов, дефисов и других символов, оставляем только цифры
+    code = ''.join(filter(str.isdigit, message.text.strip()))
+    if not code:
+        await message.answer("❌ Код должен содержать только цифры. Попробуйте еще раз.")
+        return
+    
     data = await state.get_data()
     session_name = data['session_name']
     phone = data['phone']
@@ -1689,6 +1776,7 @@ async def add_account_code(message: Message, state: FSMContext):
     api_hash = data['api_hash']
     phone_code_hash = data['phone_code_hash']
 
+    client = None
     try:
         client = Client(
             name=session_name,
@@ -1754,17 +1842,56 @@ async def add_account_code(message: Message, state: FSMContext):
             await state.set_state(AddAccountStates.waiting_for_password)
             keyboard = [[InlineKeyboardButton(text="❌ Отмена", callback_data="admin_accounts")]]
             await message.answer("Аккаунт защищен 2FA. Отправьте пароль:", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
-            await client.disconnect()
+            if client:
+                try:
+                    await client.disconnect()
+                except:
+                    pass
 
     except (PhoneCodeInvalid, PhoneCodeExpired) as e:
+        if client:
+            try:
+                await client.disconnect()
+            except:
+                pass
+        
+        error_msg = str(e).lower()
         data = await state.get_data()
         category_id = data.get('category_id')
+        
         if category_id:
-            keyboard = [[InlineKeyboardButton(text="❌ Отмена", callback_data=f"cat_userbot_{category_id}")]]
+            keyboard = [
+                [InlineKeyboardButton(text="🔄 Запросить новый код", callback_data="account_resend_code")],
+                [InlineKeyboardButton(text="❌ Отмена", callback_data=f"cat_userbot_{category_id}")]
+            ]
         else:
-            keyboard = [[InlineKeyboardButton(text="❌ Отмена", callback_data="admin_accounts")]]
-        await message.answer(f"❌ Неверный или истекший код. Попробуйте снова: {e}", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
+            keyboard = [
+                [InlineKeyboardButton(text="🔄 Запросить новый код", callback_data="account_resend_code")],
+                [InlineKeyboardButton(text="❌ Отмена", callback_data="admin_accounts")]
+            ]
+        
+        if "expired" in error_msg:
+            msg_text = (
+                "❌ <b>Код истек!</b>\n\n"
+                "Код подтверждения действителен ограниченное время. "
+                "Нажмите '🔄 Запросить новый код' для получения нового кода.\n\n"
+                f"<i>Детали: {e}</i>"
+            )
+        else:
+            msg_text = (
+                "❌ <b>Неверный код!</b>\n\n"
+                "Проверьте правильность кода. Код должен содержать только цифры.\n"
+                "Если код истек или не приходит, запросите новый код.\n\n"
+                f"<i>Детали: {e}</i>"
+            )
+        
+        await message.answer(msg_text, reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard), parse_mode="HTML")
     except Exception as e:
+        if client:
+            try:
+                await client.disconnect()
+            except:
+                pass
         data = await state.get_data()
         category_id = data.get('category_id')
         if category_id:
