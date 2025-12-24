@@ -9,6 +9,7 @@ from handlers.admin_panel import (
     _safe_callback_answer, _safe_edit_text, _pg_state_emoji,
     _is_private_invite_link, _is_public_target,
     AddPrivateGroupStates, ManagersChannelStates, AddAccountStates,
+    AddKeywordsStates, AddStopwordsStates,
     get_category_menu
 )
 from services.userbot_manager import UserbotManager
@@ -733,6 +734,9 @@ async def category_keywords_menu(callback: CallbackQuery):
     
     keyboard = []
     
+    # Кнопка для добавления нового ключевого слова
+    keyboard.append([InlineKeyboardButton(text="➕ Добавить новое", callback_data=f"cat_keyword_add_new_{category_id}")])
+    
     # Получаем ID ключевых слов категории
     conn = db.get_connection()
     cursor = conn.cursor()
@@ -740,7 +744,7 @@ async def category_keywords_menu(callback: CallbackQuery):
     category_keyword_ids = {row[0] for row in cursor.fetchall()}
     conn.close()
     
-    # Кнопки для добавления
+    # Кнопки для добавления существующих ключевых слов
     for kw in all_keywords:
         if kw['id'] not in category_keyword_ids:
             keyboard.append([
@@ -759,9 +763,41 @@ async def category_keywords_menu(callback: CallbackQuery):
     await _safe_edit_text(callback, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard), parse_mode="HTML")
 
 
+@router.callback_query(F.data.startswith("cat_keyword_add_new_"))
+async def category_keyword_add_new_start(callback: CallbackQuery, state: FSMContext):
+    """Начать добавление нового ключевого слова в категорию"""
+    try:
+        category_id = int(callback.data.split("_")[-1])
+    except Exception:
+        await _safe_callback_answer(callback, "Некорректный ID", show_alert=True)
+        return
+    
+    user_id = callback.from_user.id
+    
+    # Проверяем права доступа
+    if not check_category_access(user_id, category_id):
+        await _safe_callback_answer(callback, "❌ Доступ запрещен", show_alert=True)
+        return
+    
+    await state.set_state(AddKeywordsStates.waiting_for_keywords)
+    await state.update_data(category_id=category_id)
+    
+    await _safe_callback_answer(callback)
+    await _safe_edit_text(
+        callback,
+        "➕ <b>Добавление нового ключевого слова</b>\n\n"
+        "Отправьте ключевые слова через запятую или каждое с новой строки:\n"
+        "Они будут добавлены в общий список и автоматически привязаны к категории.",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="❌ Отмена", callback_data=f"cat_keywords_{category_id}")]
+        ]),
+        parse_mode="HTML"
+    )
+
+
 @router.callback_query(F.data.startswith("cat_keyword_add_"))
 async def category_keyword_add(callback: CallbackQuery):
-    """Добавить ключевое слово в категорию"""
+    """Добавить существующее ключевое слово в категорию"""
     try:
         parts = callback.data.split("_")
         category_id = int(parts[3])
@@ -879,6 +915,9 @@ async def category_stopwords_menu(callback: CallbackQuery):
     
     keyboard = []
     
+    # Кнопка для добавления нового стоп-слова
+    keyboard.append([InlineKeyboardButton(text="➕ Добавить новое", callback_data=f"cat_stopword_add_new_{category_id}")])
+    
     # Получаем ID стоп-слов категории
     conn = db.get_connection()
     cursor = conn.cursor()
@@ -886,6 +925,7 @@ async def category_stopwords_menu(callback: CallbackQuery):
     category_stopword_ids = {row[0] for row in cursor.fetchall()}
     conn.close()
     
+    # Кнопки для добавления существующих стоп-слов
     for sw in all_stopwords:
         if sw['id'] not in category_stopword_ids:
             keyboard.append([
@@ -904,9 +944,41 @@ async def category_stopwords_menu(callback: CallbackQuery):
     await _safe_edit_text(callback, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard), parse_mode="HTML")
 
 
+@router.callback_query(F.data.startswith("cat_stopword_add_new_"))
+async def category_stopword_add_new_start(callback: CallbackQuery, state: FSMContext):
+    """Начать добавление нового стоп-слова в категорию"""
+    try:
+        category_id = int(callback.data.split("_")[-1])
+    except Exception:
+        await _safe_callback_answer(callback, "Некорректный ID", show_alert=True)
+        return
+    
+    user_id = callback.from_user.id
+    
+    # Проверяем права доступа
+    if not check_category_access(user_id, category_id):
+        await _safe_callback_answer(callback, "❌ Доступ запрещен", show_alert=True)
+        return
+    
+    await state.set_state(AddStopwordsStates.waiting_for_stopwords)
+    await state.update_data(category_id=category_id)
+    
+    await _safe_callback_answer(callback)
+    await _safe_edit_text(
+        callback,
+        "➕ <b>Добавление нового стоп-слова</b>\n\n"
+        "Отправьте стоп-слова через запятую или каждое с новой строки:\n"
+        "Они будут добавлены в общий список и автоматически привязаны к категории.",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="❌ Отмена", callback_data=f"cat_stopwords_{category_id}")]
+        ]),
+        parse_mode="HTML"
+    )
+
+
 @router.callback_query(F.data.startswith("cat_stopword_add_"))
 async def category_stopword_add(callback: CallbackQuery):
-    """Добавить стоп-слово в категорию"""
+    """Добавить существующее стоп-слово в категорию"""
     try:
         parts = callback.data.split("_")
         category_id = int(parts[3])

@@ -1060,9 +1060,37 @@ async def add_keywords_process(message: Message, state: FSMContext):
     text = message.text.strip()
     words = [w.strip() for w in text.replace('\n', ',').split(',') if w.strip()]
     count = db.add_keywords(words)
-    await message.answer(f"✅ Добавлено {count} ключевых слов!")
-    await state.clear()
-    await message.answer("Выберите раздел:", reply_markup=get_main_menu(message.from_user.id))
+    
+    # Проверяем, есть ли category_id в state (добавление из меню категории)
+    data = await state.get_data()
+    category_id = data.get('category_id')
+    
+    if category_id:
+        # Если добавляем из категории, автоматически добавляем в категорию
+        # Получаем ID добавленных ключевых слов
+        conn = db.get_connection()
+        cursor = conn.cursor()
+        added_count = 0
+        for word in words:
+            word_lower = word.strip().lower()
+            if word_lower:
+                cursor.execute("SELECT id FROM keywords WHERE word = ?", (word_lower,))
+                row = cursor.fetchone()
+                if row:
+                    keyword_id = row[0]
+                    if db.add_category_keyword(category_id, keyword_id):
+                        added_count += 1
+        conn.close()
+        
+        await message.answer(f"✅ Добавлено {count} ключевых слов, {added_count} добавлено в категорию!")
+        await state.clear()
+        # Отправляем кнопку для возврата в меню ключевых слов категории
+        keyboard = [[InlineKeyboardButton(text="◀️ Вернуться в меню ключевых слов", callback_data=f"cat_keywords_{category_id}")]]
+        await message.answer("Выберите действие:", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
+    else:
+        await message.answer(f"✅ Добавлено {count} ключевых слов!")
+        await state.clear()
+        await message.answer("Выберите раздел:", reply_markup=get_main_menu(message.from_user.id))
 
 
 @router.callback_query(F.data == "keywords_delete")
@@ -1135,9 +1163,37 @@ async def add_stopwords_process(message: Message, state: FSMContext):
     text = message.text.strip()
     words = [w.strip() for w in text.replace('\n', ',').split(',') if w.strip()]
     count = db.add_stopwords(words)
-    await message.answer(f"✅ Добавлено {count} стоп-слов!")
-    await state.clear()
-    await message.answer("Выберите раздел:", reply_markup=get_main_menu(message.from_user.id))
+    
+    # Проверяем, есть ли category_id в state (добавление из меню категории)
+    data = await state.get_data()
+    category_id = data.get('category_id')
+    
+    if category_id:
+        # Если добавляем из категории, автоматически добавляем в категорию
+        # Получаем ID добавленных стоп-слов
+        conn = db.get_connection()
+        cursor = conn.cursor()
+        added_count = 0
+        for word in words:
+            word_lower = word.strip().lower()
+            if word_lower:
+                cursor.execute("SELECT id FROM stopwords WHERE word = ?", (word_lower,))
+                row = cursor.fetchone()
+                if row:
+                    stopword_id = row[0]
+                    if db.add_category_stopword(category_id, stopword_id):
+                        added_count += 1
+        conn.close()
+        
+        await message.answer(f"✅ Добавлено {count} стоп-слов, {added_count} добавлено в категорию!")
+        await state.clear()
+        # Отправляем кнопку для возврата в меню стоп-слов категории
+        keyboard = [[InlineKeyboardButton(text="◀️ Вернуться в меню стоп-слов", callback_data=f"cat_stopwords_{category_id}")]]
+        await message.answer("Выберите действие:", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
+    else:
+        await message.answer(f"✅ Добавлено {count} стоп-слов!")
+        await state.clear()
+        await message.answer("Выберите раздел:", reply_markup=get_main_menu(message.from_user.id))
 
 
 @router.callback_query(F.data == "stopwords_delete")
