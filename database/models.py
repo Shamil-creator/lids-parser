@@ -884,10 +884,16 @@ class Database:
 
     # ========== ОБРАБОТАННЫЕ ПОЛЬЗОВАТЕЛИ ==========
     def is_user_processed(self, user_id: int) -> bool:
-        """Проверить обработан ли пользователь"""
+        """Проверить обработан ли пользователь (timestamp обновлен недавно - в течение последних 5 минут)"""
         conn = self.get_connection()
         cursor = conn.cursor()
-        cursor.execute("SELECT 1 FROM processed_users WHERE user_id = ?", (user_id,))
+        # Проверяем, что запись существует И timestamp обновлен недавно (в течение последних 5 минут)
+        # Это означает, что пользователь ответил недавно
+        cursor.execute("""
+            SELECT 1 FROM processed_users 
+            WHERE user_id = ? 
+            AND datetime(timestamp, '+5 minutes') >= datetime('now')
+        """, (user_id,))
         result = cursor.fetchone() is not None
         conn.close()
         return result
@@ -905,6 +911,31 @@ class Database:
         result = cursor.fetchone() is not None
         conn.close()
         return result
+
+    def save_user_info(self, user_id: int, username: str = "", channel_source: str = "", original_post_text: str = ""):
+        """Сохранить информацию о пользователе без пометки как обработанного (для первого контакта)"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        # Проверяем, существует ли пользователь
+        cursor.execute("SELECT user_id FROM processed_users WHERE user_id = ?", (user_id,))
+        exists = cursor.fetchone() is not None
+        
+        if exists:
+            # Если пользователь существует, обновляем только информацию, но не timestamp
+            cursor.execute("""
+                UPDATE processed_users 
+                SET username = ?, channel_source = ?, original_post_text = ?
+                WHERE user_id = ?
+            """, (username, channel_source, original_post_text, user_id))
+        else:
+            # Если пользователя нет, создаем запись с timestamp в прошлом (1 день назад)
+            # Это позволяет сохранить информацию, но пользователь не будет считаться обработанным
+            cursor.execute("""
+                INSERT INTO processed_users (user_id, username, channel_source, original_post_text, timestamp)
+                VALUES (?, ?, ?, ?, datetime('now', '-1 day'))
+            """, (user_id, username, channel_source, original_post_text))
+        conn.commit()
+        conn.close()
 
     def mark_user_processed(self, user_id: int, username: str = "", channel_source: str = "", original_post_text: str = ""):
         """Пометить пользователя как обработанного"""

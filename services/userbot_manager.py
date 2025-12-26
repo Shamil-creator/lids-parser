@@ -218,7 +218,7 @@ class UserbotManager:
                                 user_id,
                                 author.get('username', ''),
                                 channel['link'],
-                                message_text[:500]
+                                message_text  # Передаем полный текст без обрезки
                             )
 
                             # Задержка между сообщениями
@@ -405,7 +405,7 @@ class UserbotManager:
                             user_id,
                             username,
                             f"Private Group: {group_title}",
-                            message_text[:500],
+                            message_text,  # Передаем полный текст без обрезки
                             force_repeat=force_repeat
                         )
                         print(f"[{session_name}] {'✅ Сообщение отправлено успешно' if ok else '❌ Ошибка отправки сообщения'}")
